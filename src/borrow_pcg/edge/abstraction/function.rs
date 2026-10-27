@@ -458,13 +458,60 @@ impl<'a, 'tcx: 'a> DefinedFnCallShapeDataSource<'a, 'tcx> {
             for (call_r, sig_r) in call_regions.iter().zip(sig_regions.iter()) {
                 map.insert(*call_r, *sig_r);
             }
+            Self::align_call_regions(*call_ty, *sig_ty, &mut map);
         }
         let call_result_regions = extract_regions(call_result_ty);
         let sig_result_regions = extract_regions(normalized_sig.output());
         for (call_r, sig_r) in call_result_regions.iter().zip(sig_result_regions.iter()) {
             map.insert(*call_r, *sig_r);
         }
+        Self::align_call_regions(call_result_ty, normalized_sig.output(), &mut map);
         map
+    }
+
+    fn align_call_regions(
+        call_ty: ty::Ty<'tcx>,
+        sig_ty: ty::Ty<'tcx>,
+        map: &mut HashMap<PcgRegion<'tcx>, PcgRegion<'tcx>>,
+    ) {
+        match (call_ty.kind(), sig_ty.kind()) {
+            (
+                ty::TyKind::Ref(call_region, call_inner, _),
+                ty::TyKind::Ref(sig_region, sig_inner, _),
+            ) => {
+                map.insert((*call_region).into(), (*sig_region).into());
+                Self::align_call_regions(*call_inner, *sig_inner, map);
+            }
+            (ty::TyKind::Tuple(call_types), ty::TyKind::Tuple(sig_types)) => {
+                for (call_inner, sig_inner) in call_types.iter().zip(sig_types.iter()) {
+                    Self::align_call_regions(call_inner, sig_inner, map);
+                }
+            }
+            (ty::TyKind::Adt(call_def, call_args), ty::TyKind::Adt(sig_def, sig_args))
+                if call_def.did() == sig_def.did() =>
+            {
+                for (call_arg, sig_arg) in call_args.iter().zip(sig_args.iter()) {
+                    if let (Some(call_region), Some(sig_region)) =
+                        (call_arg.as_region(), sig_arg.as_region())
+                    {
+                        map.insert(call_region.into(), sig_region.into());
+                    } else if let (Some(call_inner), Some(sig_inner)) =
+                        (call_arg.as_type(), sig_arg.as_type())
+                    {
+                        Self::align_call_regions(call_inner, sig_inner, map);
+                    }
+                }
+            }
+            (ty::TyKind::Slice(call_inner), ty::TyKind::Slice(sig_inner))
+            | (ty::TyKind::Array(call_inner, _), ty::TyKind::Array(sig_inner, _))
+            | (ty::TyKind::RawPtr(call_inner, _), ty::TyKind::RawPtr(sig_inner, _)) => {
+                Self::align_call_regions(*call_inner, *sig_inner, map);
+            }
+            (ty::TyKind::Dynamic(_, call_region, ..), ty::TyKind::Dynamic(_, sig_region, ..)) => {
+                map.insert((*call_region).into(), (*sig_region).into());
+            }
+            _ => {}
+        }
     }
 
     /// Builds a mapping from normalized sig regions to generalized lifetimes
