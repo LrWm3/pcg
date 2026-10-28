@@ -443,4 +443,15 @@ impl<'tcx> PlaceCapabilities<'tcx> {
         self.get(place, ctxt)
             .is_some_and(|c| c == CapabilityKind::Exclusive)
     }
+
+    /// The tracked capability, including restrictions imposed by live borrows.
+    /// Unlike the owned initialisation tree, this does not treat a loaned slot
+    /// as readable merely because it was initialised.
+    pub fn capability(
+        &self,
+        place: Place<'tcx>,
+        ctxt: CompilerCtxt<'_, 'tcx>,
+    ) -> Option<CapabilityKind> {
+        self.get(place, ctxt)
+    }
 }
