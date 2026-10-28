@@ -390,6 +390,34 @@ fn test_vec_into_iter_shape() {
     });
 }
 
+/// The associated `Iterator::Item` normalizes to a reference carrying the
+/// iterator's element lifetime, independently of the borrow of `self`.
+#[test]
+fn test_slice_iter_mut_next_shape() {
+    let input = r#"
+        fn caller(values: &mut [u32]) {
+            let mut iter = values.iter_mut();
+            let first = iter.next();
+            drop(iter);
+            if let Some(value) = first { *value = 7; }
+        }
+    "#;
+    run_pcg_on_str(input, BodySelector::FirstFunction, true, |analysis| {
+        let ctxt = analysis.ctxt();
+        let call = find_call("Iterator::next", ctxt);
+        let shape = FunctionShape::for_fn_call(call, ctxt).unwrap();
+        let expected = make_shape(
+            &[arg_in(0, 0), arg_in(0, 1)],
+            &[result(0)],
+            &[
+                (arg_in(0, 1), arg_out(0, 1)),
+                (arg_in(0, 1), result(0)),
+            ],
+        );
+        assert_shape_eq(&shape, &expected);
+    });
+}
+
 #[test]
 fn test_tricky() {
     let input = r#"

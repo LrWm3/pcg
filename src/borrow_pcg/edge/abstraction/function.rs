@@ -22,10 +22,13 @@ use crate::{
     rustc_interface::{
         BoundVariableKind, fn_def_args,
         hir::def_id::DefId,
-        infer::{infer::TyCtxtInferExt, traits::ObligationCause},
+        infer::{
+            infer::{TyCtxtInferExt, resolve::OpportunisticRegionResolver},
+            traits::ObligationCause,
+        },
         middle::{
             mir::{self, Location},
-            ty::{self, GenericArgsRef},
+            ty::{self, GenericArgsRef, TypeFoldable},
         },
         skip_normalization,
         span::{
@@ -1185,7 +1188,13 @@ impl<'tcx> DefinedFnCall<'tcx> {
             >>::new(&infcx);
             at.deeply_normalize(subst_sig, &mut *fulfill_cx)
         };
-        normalized.unwrap()
+        // Normalizing an associated type can introduce fresh region variables
+        // equated with regions in the inputs (e.g. Iterator::Item = &'a mut T).
+        // Resolve those equalities before discarding the inference context so
+        // the call shape retains the input-to-result lifetime connection.
+        normalized
+            .unwrap()
+            .fold_with(&mut OpportunisticRegionResolver::new(&infcx))
     }
 }
 
