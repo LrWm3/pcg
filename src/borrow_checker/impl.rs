@@ -325,7 +325,18 @@ impl<'tcx> RustBorrowCheckerInterface<'tcx> for NllBorrowCheckerImpl<'_, 'tcx> {
         let Some(local) = node.related_maybe_labelled_place().map(|p| p.local()) else {
             return true;
         };
-        if local == RETURN_PLACE {
+        if local == RETURN_PLACE
+            || matches!(node, PcgNode::LifetimeProjection(_))
+                && self
+                    .borrow_checker_data
+                    .body
+                    .args_iter()
+                    .any(|arg| arg == local)
+        {
+            // Current argument projections are observable by the caller at
+            // return, including references stored through a mutable argument.
+            // Their last executable read does not end those obligations.
+            // Historical/moved places are handled separately by graph packing.
             return true;
         }
         self.place_liveness.is_live(local.into(), location)
