@@ -570,7 +570,8 @@ impl<P, Kind: RegionIdxMarker> LifetimeProjection<'_, P, Kind> {
     pub(crate) fn is_future(&self) -> bool {
         self.label == Some(LifetimeProjectionLabel::Future)
     }
-    pub(crate) fn label(&self) -> Option<LifetimeProjectionLabel> {
+    /// The heap state selected for the resources behind this projection.
+    pub fn label(&self) -> Option<LifetimeProjectionLabel> {
         self.label
     }
 }
