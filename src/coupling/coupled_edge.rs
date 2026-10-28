@@ -242,6 +242,16 @@ impl<'tcx, P: PcgNodeComponent> PcgCoupledEdgeKind<'tcx, P> {
     pub(crate) fn loop_(edge: LoopCoupledEdgeKind<'tcx, P>) -> Self {
         Self(FunctionCallOrLoop::Loop(edge))
     }
+
+    /// The original MIR loop head for a loop abstraction, if this is one.
+    #[must_use]
+    pub fn loop_head(&self) -> Option<crate::rustc_interface::middle::mir::BasicBlock> {
+        match &self.0 {
+            FunctionCallOrLoop::Loop(loop_) => Some(loop_.metadata().loop_head_block()),
+            FunctionCallOrLoop::FunctionCall(_) => None,
+        }
+    }
+
     pub fn inputs<Ctxt>(&self, ctxt: Ctxt) -> Vec<AbstractionInputTarget<'tcx, P>>
     where
         P: PcgPlace<'tcx, Ctxt>,
