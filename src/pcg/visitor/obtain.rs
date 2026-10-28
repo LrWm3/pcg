@@ -642,20 +642,25 @@ impl<'state, 'a: 'state, 'tcx: 'a, Ctxt: DataflowCtxt<'a, 'tcx>>
                 )
                 .into(),
             )?;
-            self.record_and_apply_action(
-                BorrowPcgAction::label_lifetime_projection(
-                    LabelNodePredicate::And(vec![
-                        LabelNodePredicate::PlaceEquals(place),
-                        LabelNodePredicate::InSourceNodes,
-                        LabelNodePredicate::EdgeType(BorrowPcgEdgeType::BorrowFlow {
-                            future_edge_kind: Some(FutureEdgeKind::FromExpansion),
-                        }),
-                    ]),
-                    None,
-                    "label place and update related capabilities",
-                )
-                .into(),
-            )?;
+            // StorageDead does not replace the value of the local. Preserve
+            // the post-call version of its lifetime projections so that
+            // coupled borrows stay connected to their future descendants.
+            if obtain_type != ObtainType::ForStorageDead {
+                self.record_and_apply_action(
+                    BorrowPcgAction::label_lifetime_projection(
+                        LabelNodePredicate::And(vec![
+                            LabelNodePredicate::PlaceEquals(place),
+                            LabelNodePredicate::InSourceNodes,
+                            LabelNodePredicate::EdgeType(BorrowPcgEdgeType::BorrowFlow {
+                                future_edge_kind: Some(FutureEdgeKind::FromExpansion),
+                            }),
+                        ]),
+                        None,
+                        "label place and update related capabilities",
+                    )
+                    .into(),
+                )?;
+            }
             self.render_debug_graph(None, "after step 1");
         }
 
