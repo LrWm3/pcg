@@ -1,3 +1,6 @@
+mod projection_map;
+pub use projection_map::FunctionCallProjectionMap;
+
 use std::{
     collections::{BTreeSet, HashSet},
     marker::PhantomData,
@@ -469,6 +472,7 @@ impl<'tcx, Ctxt: HasTyCtxt<'tcx>> DisplayWithCtxt<Ctxt> for FunctionData<'tcx> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MakeFunctionShapeError {
+    ArgumentCountMismatch,
     ContainsAliasType,
     UnsupportedRustVersion,
     NoFunctionData,

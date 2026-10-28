@@ -15,8 +15,9 @@ pub mod validity_conditions;
 pub(crate) mod visitor;
 
 pub use abstraction::{
-    ArgIdx, ArgIdxOrResult, FunctionData, FunctionShape, FunctionShapeCoupledEdges,
-    FunctionShapeInput, FunctionShapeNode, FunctionShapeOutput, MakeFunctionShapeError,
+    ArgIdx, ArgIdxOrResult, FunctionCallProjectionMap, FunctionData, FunctionShape,
+    FunctionShapeCoupledEdges, FunctionShapeInput, FunctionShapeNode, FunctionShapeOutput,
+    MakeFunctionShapeError,
 };
 pub use domain::{AbstractionInputTarget, AbstractionOutputTarget};
 pub use visitor::GeneralizedLifetime;
