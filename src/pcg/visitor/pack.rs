@@ -328,6 +328,16 @@ impl<'pcg, 'a: 'pcg, 'tcx: 'a, Ctxt: DataflowCtxt<'a, 'tcx> + DebugCtxt>
         let fg = self.pcg.borrow.graph.frozen_graph();
         let location = self.location();
         let should_pack_edge = |edge: &BorrowPcgEdgeKind<'tcx>| {
+            if let BorrowPcgEdgeKind::Borrow(borrow) = edge
+                && fg.has_edge_blocking(borrow.assigned_ref().into(), self.ctxt)
+            {
+                // A dead outer lifetime does not imply that its referent has
+                // been repacked: a live field reborrow can still hold part of
+                // the expanded value. Wait for that structural dependency.
+                // This is an ordering constraint, not an extra resource to
+                // consume from the reference local on borrow removal.
+                return ShouldPackEdge::No;
+            }
             if let BorrowPcgEdgeKind::BorrowPcgExpansion(expansion) = edge {
                 if !ancestor_predicate_allows_killing(expansion.base()) {
                     return ShouldPackEdge::No;
