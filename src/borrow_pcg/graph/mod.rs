@@ -381,15 +381,18 @@ impl<'tcx> BorrowsGraph<'tcx> {
             .map(|(kind, conditions)| BorrowPcgEdge::new(kind, conditions))
     }
 
-    pub(crate) fn abstraction_edges<'slf>(
-        &'slf self,
-    ) -> impl Iterator<Item = Conditioned<&'slf AbstractionEdge<'tcx>>> + 'slf {
-        self.edges().filter_map(|edge| match edge.kind {
-            BorrowPcgEdgeKind::Abstraction(abstraction) => Some(Conditioned {
-                conditions: edge.conditions().clone(),
-                value: abstraction,
-            }),
-            _ => None,
+    /// Obligations introduced on an edge entering a loop, including grouped
+    /// loop abstractions. Function-call groups are introduced by the call.
+    pub(crate) fn abstraction_obligations(
+        &self,
+    ) -> impl Iterator<Item = Conditioned<&BorrowPcgEdgeKind<'tcx>>> {
+        self.edges().filter_map(|edge| {
+            let include = match edge.kind() {
+                BorrowPcgEdgeKind::Abstraction(_) => true,
+                BorrowPcgEdgeKind::Coupled(coupled) => coupled.loop_head().is_some(),
+                _ => false,
+            };
+            include.then(|| Conditioned::new(edge.kind, edge.conditions().clone()))
         })
     }
 

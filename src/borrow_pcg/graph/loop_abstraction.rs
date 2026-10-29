@@ -15,10 +15,12 @@ use crate::{
         graph::{BorrowsGraph, join::JoinBorrowsArgs},
         region_projection::{
             ExtractRegionsCtxt, LifetimeProjection, LifetimeProjectionIdx, LifetimeProjectionLabel,
+            PlaceOrConst,
         },
         state::BorrowStateMutRef,
         validity_conditions::ValidityConditions,
     },
+    coupling::{CoupledEdgesData, LoopCoupledEdgeKind, PcgCoupledEdgeKind},
     r#loop::{PlaceUsage, PlaceUsages},
     pcg::{
         self, CapabilityKind, LocalNodeLike, PcgMutRef, PcgNode, PcgNodeLike,
@@ -37,6 +39,7 @@ use crate::{
         display::{DisplayOutput, DisplayWithCompilerCtxt, DisplayWithCtxt, OutputMode},
         logging::{self, LogPredicate},
         maybe_old::MaybeLabelledPlace,
+        maybe_remote::MaybeRemotePlace,
         remote::RemotePlace,
     },
 };
@@ -318,6 +321,82 @@ impl<'tcx> BorrowsGraph<'tcx> {
             .collect();
         for kind in &self_loop_edges {
             graph.remove(kind);
+        }
+        if ctxt.settings().coupling {
+            // One owner's storage and element resources can be blocked by
+            // different lifetimes of one value. Restore them together, without
+            // changing loops that distribute borrows among several owners or
+            // values: those still need their existing independent capabilities.
+            let mut groups = HashMap::default();
+            for edge in graph.edges() {
+                if let BorrowPcgEdgeKind::Abstraction(AbstractionEdge::Loop(abstraction)) =
+                    edge.kind()
+                    && abstraction.metadata.loop_head_block() == loop_head
+                {
+                    groups
+                        .entry((abstraction.metadata, edge.conditions().clone()))
+                        .or_insert_with(Vec::new)
+                        .push((abstraction.edge, edge.kind().clone()));
+                }
+            }
+            for ((metadata, conditions), edges) in groups {
+                for coupled in CoupledEdgesData::new(edges.iter().map(|(edge, _)| *edge)) {
+                    if coupled.inputs().len() == 1 && coupled.outputs().len() == 1 {
+                        continue;
+                    }
+                    let inputs = coupled
+                        .inputs()
+                        .iter()
+                        .map(|input| input.to_pcg_node(ctxt))
+                        .collect::<Vec<_>>();
+                    let storage = inputs
+                        .iter()
+                        .filter_map(|input| match input {
+                            PcgNode::Place(MaybeLabelledPlace::Current(place)) => Some(*place),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    let [owner] = storage.as_slice() else {
+                        continue;
+                    };
+                    if !inputs.iter().all(|input| match input {
+                        PcgNode::Place(MaybeLabelledPlace::Current(place)) => place == owner,
+                        PcgNode::LifetimeProjection(projection) => matches!(projection.base(),
+                            PlaceOrConst::Place(MaybeRemotePlace::Local(MaybeLabelledPlace::Current(place)))
+                                if place == *owner),
+                        _ => false,
+                    }) {
+                        continue;
+                    }
+                    let outputs = coupled
+                        .outputs()
+                        .iter()
+                        .map(|output| output.to_pcg_node(ctxt).expect_lifetime_projection().base())
+                        .collect::<HashSet<_>>();
+                    if outputs.len() != 1
+                        || !inputs
+                            .iter()
+                            .any(|input| matches!(input, PcgNode::LifetimeProjection(_)))
+                    {
+                        continue;
+                    }
+                    for (edge, kind) in &edges {
+                        if coupled.inputs().contains(&edge.input())
+                            && coupled.outputs().contains(&edge.output())
+                        {
+                            graph.remove(kind);
+                        }
+                    }
+                    graph.insert(
+                        BorrowPcgEdge::new(
+                            PcgCoupledEdgeKind::loop_(LoopCoupledEdgeKind::new(metadata, coupled))
+                                .into(),
+                            conditions.clone(),
+                        ),
+                        ctxt,
+                    );
+                }
+            }
         }
         tracing::debug!("Completed loop abstraction");
         for (place, capability) in &capability_updates {

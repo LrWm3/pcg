@@ -135,7 +135,7 @@ impl<'a, 'tcx: 'a> PcgAnalysisResults<'a, 'tcx> {
         let self_abstraction_edges = from_post_main
             .borrow
             .graph()
-            .abstraction_edges()
+            .abstraction_obligations()
             .collect::<FxHashSet<_>>();
 
         let ctxt: ResultsCtxt<'a, 'tcx> = self.results_ctxt();
@@ -168,12 +168,12 @@ impl<'a, 'tcx: 'a> PcgAnalysisResults<'a, 'tcx> {
                     from_post_main.bridge(&to.entry_state, location.block, succ, ctxt)?;
 
                 let mut borrow_actions = BorrowPcgActions::new();
-                for abstraction in to.entry_state.borrow.graph().abstraction_edges() {
+                for abstraction in to.entry_state.borrow.graph().abstraction_obligations() {
                     if !self_abstraction_edges.contains(&abstraction) {
                         borrow_actions.push(
                             BorrowPcgAction::add_edge(
                                 BorrowPcgEdge::new(
-                                    abstraction.value.clone().into(),
+                                    abstraction.value.clone(),
                                     abstraction.conditions,
                                 ),
                                 "terminator",
