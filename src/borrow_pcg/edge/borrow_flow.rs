@@ -133,6 +133,12 @@ where
         if short_matches {
             changed |= self.target.label_lifetime_projection(label);
         }
+        // Relabelling just one endpoint can also identify it with the
+        // other (already labelled) endpoint. This is the same tautological
+        // flow as when both endpoints matched the predicate above.
+        if self.source == self.target.rebase() {
+            return LabelLifetimeProjectionResult::ShouldCollapse;
+        }
         self.assert_validity(ctxt);
         changed
     }

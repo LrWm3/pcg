@@ -167,10 +167,12 @@ impl<'tcx> BorrowsGraph<'tcx> {
                     },
                 );
             }
+            let validity = self.check_validity(ctxt.bc_ctxt());
             pcg_validity_assert!(
-                self.is_valid(ctxt.bc_ctxt()),
+                validity.is_ok(),
                 [ctxt],
-                "Graph became invalid after join"
+                "Graph became invalid after join: {:?}",
+                validity.as_ref().err()
             );
             return;
         }
