@@ -26,7 +26,7 @@ fn main() {
         f: &mut i,
     };
     let b = a.get::<&mut i32>();
-    // PCG: bb0[15] post_main: call Foo::get at bb0[15]: [_6 before bb0[15]:PostOperands↓'?24 before bb0[15]:PostMain, _6 before bb0[15]:PostOperands↓'?25 before bb0[15]:PostMain] -> [b↓'?23, _6 before bb0[15]:PostOperands↓'?25 after bb0]
+    // PCG: bb0[15] post_main: call Foo::get at bb0[15]: [_6 before bb0[15]:PostOperands↓'?24 before bb0[15]:PostMain, _6 before bb0[15]:PostOperands↓'?25 before bb0[15]:PostMain] -> [b↓'?23]
     *b = 1;
     println!("{i}");
 }

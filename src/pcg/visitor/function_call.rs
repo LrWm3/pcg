@@ -19,6 +19,7 @@ use crate::{
     pcg::obtain::{HasSnapshotLocation, expand::PlaceExpander},
     rustc_interface::{
         fn_def_args,
+        index::Idx,
         middle::mir::{Location, Operand},
         span::Span,
     },
@@ -80,8 +81,27 @@ impl<'a, 'tcx: 'a, Ctxt: DataflowCtxt<'a, 'tcx>> PcgVisitor<'_, 'a, 'tcx, Ctxt> 
             location: call.location,
             defined_fn_call: call.defined,
         };
+        // A mutable argument's interior is not an immediately available
+        // post-call output when its outer borrow flows into the result. Its
+        // retained projections become accessible when that result expires.
+        // Keeping them as call targets creates a dependency through their
+        // future projections back to the still-borrowed owner, preventing the
+        // call from ever being removed even after every returned borrow dies.
+        let visible_output = |output: LifetimeProjection<'tcx, ArgIdxOrResult>| {
+            let ArgIdxOrResult::Argument(argument) = output.base else {
+                return true;
+            };
+            let ty = call.inputs[*argument].ty(self.ctxt.body(), self.ctxt.tcx());
+            !matches!(ty.kind(), ty::TyKind::Ref(_, _, ty::Mutability::Mut))
+                || !shape.edges().any(|edge| {
+                    edge.input().base == argument
+                        && edge.input().region_idx.index() == 0
+                        && matches!(edge.output().base, ArgIdxOrResult::Result)
+                })
+        };
         let abstraction_edges: HashSet<AbstractionBlockEdge<'_, _, _>> = shape
             .edges()
+            .filter(|edge| visible_output(edge.output()))
             .map(|AbstractionBlockEdge { input, output, .. }| {
                 AbstractionBlockEdge::new_checked(
                     self.node_for_input(call, input),
