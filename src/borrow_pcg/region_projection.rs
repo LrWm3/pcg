@@ -11,7 +11,7 @@ use crate::{
     borrow_pcg::{
         graph::loop_abstraction::MaybeRemoteCurrentPlace,
         has_pcs_elem::{LabelLifetimeProjectionResult, LabelPlace, PlaceLabeller},
-        visitor::LifetimeKind,
+        visitor::{LifetimeKind, OpaqueTy},
     },
     error::PcgError,
     pcg::{LocalNodeLike, PcgNode, PcgNodeLike, PcgNodeWithPlace},
@@ -46,6 +46,8 @@ impl DisplayWithCtxt<ty::TyCtxt<'_>> for RegionVid {
 #[rustversion::since(2025-12-01)]
 #[derive(PartialEq, Eq, Clone, Copy, Hash, From, Debug)]
 pub enum PcgRegion<'tcx> {
+    /// The entire resource group hidden in an opaque type; never a RegionVid.
+    RegionsIn(OpaqueTy<'tcx>),
     RegionVid(RegionVid),
     ReErased,
     ReStatic,
@@ -60,6 +62,8 @@ pub enum PcgRegion<'tcx> {
 #[rustversion::before(2025-12-01)]
 #[derive(PartialEq, Eq, Clone, Copy, Hash, From, Debug)]
 pub enum PcgRegion<'tcx> {
+    /// The entire resource group hidden in an opaque type; never a RegionVid.
+    RegionsIn(OpaqueTy<'tcx>),
     RegionVid(RegionVid),
     ReErased,
     ReStatic,
@@ -108,7 +112,7 @@ impl<'tcx> PcgRegion<'tcx> {
     }
 
     #[rustversion::since(2025-12-01)]
-    pub(crate) fn rust_region(self, ctxt: ty::TyCtxt<'tcx>) -> ty::Region<'tcx> {
+    pub(crate) fn rust_region(self, ctxt: ty::TyCtxt<'tcx>) -> Option<ty::Region<'tcx>> {
         #[rustversion::since(2025-03-01)]
         fn new_late_param<'a, 'tcx: 'a>(
             late_param_region: ty::LateParamRegion,
@@ -116,7 +120,8 @@ impl<'tcx> PcgRegion<'tcx> {
         ) -> ty::Region<'tcx> {
             ty::Region::new_late_param(ctxt, late_param_region.scope, late_param_region.kind)
         }
-        match self {
+        Some(match self {
+            PcgRegion::RegionsIn(_) => return None,
             PcgRegion::RegionVid(region_vid) => ty::Region::new_var(ctxt, region_vid),
             PcgRegion::ReErased => todo!(),
             PcgRegion::ReStatic => ctxt.lifetimes.re_static,
@@ -132,11 +137,11 @@ impl<'tcx> PcgRegion<'tcx> {
             PcgRegion::ReEarlyParam(early_param_region) => {
                 ty::Region::new_early_param(ctxt, early_param_region)
             }
-        }
+        })
     }
 
     #[rustversion::before(2025-12-01)]
-    pub(crate) fn rust_region(self, ctxt: ty::TyCtxt<'tcx>) -> ty::Region<'tcx> {
+    pub(crate) fn rust_region(self, ctxt: ty::TyCtxt<'tcx>) -> Option<ty::Region<'tcx>> {
         #[rustversion::before(2025-03-01)]
         fn new_late_param<'a, 'tcx: 'a>(
             late_param_region: ty::LateParamRegion,
@@ -155,7 +160,8 @@ impl<'tcx> PcgRegion<'tcx> {
         ) -> ty::Region<'tcx> {
             ty::Region::new_late_param(ctxt, late_param_region.scope, late_param_region.kind)
         }
-        match self {
+        Some(match self {
+            PcgRegion::RegionsIn(_) => return None,
             PcgRegion::RegionVid(region_vid) => ty::Region::new_var(ctxt, region_vid),
             PcgRegion::ReErased => todo!(),
             PcgRegion::ReStatic => ctxt.lifetimes.re_static,
@@ -169,7 +175,7 @@ impl<'tcx> PcgRegion<'tcx> {
                 ty::Region::new_early_param(ctxt, early_param_region)
             }
             _ => unreachable!(),
-        }
+        })
     }
 }
 
@@ -202,6 +208,7 @@ impl<'tcx, Ctxt: HasTyCtxt<'tcx> + DisplayCtxtFor<RegionVid>> DisplayWithCtxt<Ct
     #[allow(unreachable_patterns)]
     fn display_output(&self, ctxt: Ctxt, mode: OutputMode) -> DisplayOutput {
         match self {
+            PcgRegion::RegionsIn(ty) => format!("RegionsIn({ty})").into(),
             PcgRegion::RegionVid(vid) => ctxt.display_value(vid, mode),
             PcgRegion::ReErased => "ReErased".into(),
             PcgRegion::ReStatic => "ReStatic".into(),
@@ -665,6 +672,10 @@ pub(crate) fn region_is_invariant_in_type<'tcx>(
     region: PcgRegion<'tcx>,
     ty: ty::Ty<'tcx>,
 ) -> bool {
+    if matches!(region, PcgRegion::RegionsIn(_)) {
+        return true;
+    }
+
     let mut visitor = TyVarianceVisitor {
         tcx,
         target: region,

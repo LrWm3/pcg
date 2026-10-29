@@ -68,17 +68,13 @@ fn align<'tcx>(identity: ty::Ty<'tcx>, actual: ty::Ty<'tcx>, origins: &mut Origi
     match (identity.kind(), actual.kind()) {
         (ty::TyKind::Param(_) | ty::TyKind::Alias(..), _) => {
             let opaque = OpaqueTy::try_from(identity).unwrap();
-            // A caller's opaque type may contain additional, unrepresented
-            // borrows. Its absence of explicit regions is not evidence of none.
-            let concrete = !actual.walk().any(|arg| {
-                arg.as_type().is_some_and(|ty| {
-                    matches!(ty.kind(), ty::TyKind::Param(_) | ty::TyKind::Alias(..))
-                })
-            });
+            // Hidden resources have an explicit body projection now. Mapping
+            // the complete group must retain those projections, even when no
+            // concrete lifetime is visible in the substituted type.
             record(
                 origins,
                 GeneralizedLifetime::RegionsIn(opaque),
-                concrete.then(|| extract_regions(actual).into_iter().collect()),
+                Some(extract_regions(actual).into_iter().collect()),
             );
         }
         (ty::TyKind::Ref(a, x, ma), ty::TyKind::Ref(b, y, mb)) if ma == mb => {
@@ -120,8 +116,8 @@ fn align<'tcx>(identity: ty::Ty<'tcx>, actual: ty::Ty<'tcx>, origins: &mut Origi
 
 impl<'tcx> FunctionData<'tcx> {
     /// Build a partial, structurally checked mapping using the same generalized
-    /// projection lists as the signature shape. Unnormalized or opaque shapes
-    /// remain unknown; consumers must handle that explicitly.
+    /// projection lists as the signature shape. Opaque substitutions retain their
+    /// body groups; unmatched structural shapes remain explicitly unknown.
     pub fn call_projection_map(
         self,
         arguments: &[ty::Ty<'tcx>],

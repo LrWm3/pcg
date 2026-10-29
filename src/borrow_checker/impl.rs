@@ -6,7 +6,10 @@ use crate::visualization::bc_facts_graph::RegionPrettyPrinter;
 use crate::{
     BodyAndBorrows,
     borrow_checker::{InScopeBorrows, RustBorrowCheckerInterface},
-    borrow_pcg::region_projection::{ExtractRegionsCtxt, PcgRegion},
+    borrow_pcg::{
+        region_projection::{ExtractRegionsCtxt, PcgRegion},
+        visitor::OpaqueTy,
+    },
     pcg::PcgNode,
     rustc_interface::{
         borrowck::{
@@ -34,6 +37,7 @@ use std::{
 
 #[derive(Clone)]
 pub(crate) struct RustBorrowCheckerData<'mir, 'tcx: 'mir> {
+    opaque_outlives: std::collections::HashMap<OpaqueTy<'tcx>, Vec<PcgRegion<'tcx>>>,
     input_facts: &'mir PoloniusInput,
     in_scope_borrows: Rc<RefCell<ResultsCursor<'mir, 'tcx, Borrows<'mir, 'tcx>>>>,
     location_table: &'mir LocationTable,
@@ -58,6 +62,19 @@ impl<'mir, 'tcx: 'mir> RustBorrowCheckerData<'mir, 'tcx> {
 }
 
 impl<'mir, 'tcx: 'mir> RustBorrowCheckerData<'mir, 'tcx> {
+    fn opaque_outlives(&self, opaque: OpaqueTy<'tcx>, region: PcgRegion<'tcx>) -> bool {
+        self.opaque_outlives.get(&opaque).is_some_and(|bounds| {
+            bounds.iter().any(|bound| {
+                *bound == region
+                    || bound.is_static()
+                    || match (bound.vid(), region.vid()) {
+                        (Some(sup), Some(sub)) => self.region_cx.eval_outlives(sup, sub),
+                        _ => false,
+                    }
+            })
+        })
+    }
+
     pub(crate) fn borrows_in_scope_at(&self, location: Location, before: bool) -> InScopeBorrows {
         if before {
             self.in_scope_borrows
@@ -74,7 +91,18 @@ impl<'mir, 'tcx: 'mir> RustBorrowCheckerData<'mir, 'tcx> {
         let location_table = body.location_table();
         let region_cx = body.region_inference_context();
         let borrows = body.borrow_set();
+        let opaque_outlives =
+            crate::borrow_pcg::edge::abstraction::function::collect_implied_type_outlives(
+                &body
+                    .body()
+                    .local_decls
+                    .iter()
+                    .map(|decl| decl.ty)
+                    .collect::<Vec<_>>(),
+                tcx,
+            );
         Self {
+            opaque_outlives,
             in_scope_borrows: Rc::new(RefCell::new(
                 compute_fixpoint(
                     Borrows::new(tcx, body.body(), region_cx, borrows),
@@ -192,6 +220,10 @@ impl DisplayCtxtFor<RegionVid> for PoloniusBorrowChecker<'_, '_> {
 }
 
 impl<'mir, 'tcx: 'mir> RustBorrowCheckerInterface<'tcx> for PoloniusBorrowChecker<'mir, 'tcx> {
+    fn opaque_outlives(&self, opaque: OpaqueTy<'tcx>, region: PcgRegion<'tcx>) -> bool {
+        self.borrow_checker_data.opaque_outlives(opaque, region)
+    }
+
     fn is_live(&self, node: PcgNode<'tcx>, location: Location) -> bool {
         let ctxt = self.ctxt();
         let regions: Vec<PcgRegion<'tcx>> = match node {
@@ -215,6 +247,9 @@ impl<'mir, 'tcx: 'mir> RustBorrowCheckerInterface<'tcx> for PoloniusBorrowChecke
             .map(|r| (*r).into())
             .collect::<BTreeSet<_>>();
         regions.iter().any(|region| match region {
+            // Opaque payloads are conservatively retained. They have no
+            // borrow-index identity that Polonius can query.
+            PcgRegion::RegionsIn(_) => true,
             PcgRegion::RegionVid(region_vid) => live_loans.iter().any(|loan| {
                 if live_origins.contains(region_vid) {
                     return true;
@@ -260,7 +295,9 @@ impl<'mir, 'tcx: 'mir> RustBorrowCheckerInterface<'tcx> for PoloniusBorrowChecke
     ) -> bool {
         self.origin_contains_loan_at_map(RichLocation::Start(location))
             .is_some_and(|map| {
-                map.get(&region.vid().unwrap())
+                region
+                    .vid()
+                    .and_then(|vid| map.get(&vid))
                     .is_some_and(|set| set.contains(&loan))
             })
     }
@@ -299,6 +336,10 @@ impl DisplayCtxtFor<RegionVid> for NllBorrowCheckerImpl<'_, '_> {
 }
 
 impl<'tcx> RustBorrowCheckerInterface<'tcx> for NllBorrowCheckerImpl<'_, 'tcx> {
+    fn opaque_outlives(&self, opaque: OpaqueTy<'tcx>, region: PcgRegion<'tcx>) -> bool {
+        self.borrow_checker_data.opaque_outlives(opaque, region)
+    }
+
     fn input_facts(&self) -> &PoloniusInput {
         self.borrow_checker_data.input_facts
     }
@@ -364,9 +405,11 @@ impl<'tcx> RustBorrowCheckerInterface<'tcx> for NllBorrowCheckerImpl<'_, 'tcx> {
         loan: BorrowIndex,
         _location: Location,
     ) -> bool {
-        self.borrow_checker_data
-            .region_cx
-            .eval_outlives(self.borrow_index_to_region(loan), region.vid().unwrap())
+        region.vid().is_some_and(|vid| {
+            self.borrow_checker_data
+                .region_cx
+                .eval_outlives(self.borrow_index_to_region(loan), vid)
+        })
     }
 
     fn borrows_in_scope_at(&self, location: Location, before: bool) -> InScopeBorrows {

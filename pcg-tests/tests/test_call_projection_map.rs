@@ -66,7 +66,7 @@ fn collapsed_lifetimes_keep_both_signature_origins() {
 }
 
 #[test]
-fn generic_projection_expands_or_is_known_empty_but_opaque_stays_unknown() {
+fn generic_projection_preserves_opaque_body_groups() {
     run_pcg_on_str(
         "fn target<T>(x: T) -> T { x }",
         BodySelector::FirstFunction,
@@ -99,7 +99,10 @@ fn generic_projection_expands_or_is_known_empty_but_opaque_stays_unknown() {
                 let opaque = data
                     .call_projection_map(signature.inputs(), signature.output(), ctxt)
                     .unwrap();
-                assert_eq!(opaque.call_nodes(node), None);
+                assert_eq!(
+                    opaque.call_nodes(node),
+                    Some([LifetimeProjection::from_index(base, 0.into())].as_slice())
+                );
             }
             assert!(data.call_projection_map(&[], tcx.types.u32, ctxt).is_err());
         },

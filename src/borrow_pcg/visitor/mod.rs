@@ -17,9 +17,9 @@ use super::region_projection::{Generalized, LifetimeProjectionIdx, PcgRegion, Re
 /// and which [`LifetimeProjectionIdx`] kind they correspond to. The two
 /// implementations are:
 ///
-/// - [`PcgRegion`]: extracts concrete regions (lifetime projections).
-/// - [`GeneralizedLifetime`]: extracts regions *and* `RegionsIn(τ)` for opaque
-///   types (generalized lifetime projections).
+/// - [`PcgRegion`]: extracts concrete regions and opaque groups for body projections.
+/// - [`GeneralizedLifetime`]: uses signature projection indices and may also
+///   include explicit trait-bound lifetime anchors.
 pub trait LifetimeKind<'tcx>: Sized + Copy + PartialEq + Eq + std::fmt::Debug + Hash {
     /// The index kind: [`Region`] for lifetime projections, [`Generalized`]
     /// for generalized lifetime projections.
@@ -59,40 +59,8 @@ impl<'tcx, Ctxt: Copy + HasTyCtxt<'tcx>> LifetimeDataCtxt<'tcx, GeneralizedLifet
     }
 }
 
-struct LifetimeExtractor<'tcx> {
-    lifetimes: Vec<ty::Region<'tcx>>,
-}
-
-impl<'tcx> TypeVisitor<ty::TyCtxt<'tcx>> for LifetimeExtractor<'tcx> {
-    fn visit_ty(&mut self, ty: ty::Ty<'tcx>) {
-        match ty.kind() {
-            ty::TyKind::Dynamic(_, region, ..) => {
-                // TODO: predicates?
-                self.visit_region(*region);
-            }
-            //  TODO: Justify why function pointers are ignored
-            ty::TyKind::FnPtr(_, _) => {}
-            ty::TyKind::Closure(_, args) => {
-                let closure_args = args.as_closure();
-                let upvar_tys = closure_args.upvar_tys();
-                for ty in upvar_tys {
-                    self.visit_ty(ty);
-                }
-            }
-            _ => {
-                ty.super_visit_with(self);
-            }
-        }
-    }
-    fn visit_region(&mut self, rr: ty::Region<'tcx>) {
-        if !self.lifetimes.contains(&rr) {
-            self.lifetimes.push(rr);
-        }
-    }
-}
-
-/// Returns all of the (possibly nested) regions in `ty` that could be part of
-/// its region projection. In particular, the intention of this function is to
+/// Returns concrete regions and opaque resource groups in `ty` that could be
+/// part of its body projections. In particular, the intention of this function is to
 /// *only* return regions that correspond to data borrowed in a type. In
 /// particular, for closures / functions, we do not include regions in the input
 /// or argument types.
@@ -106,9 +74,13 @@ impl<'tcx> TypeVisitor<ty::TyCtxt<'tcx>> for LifetimeExtractor<'tcx> {
 /// substitution of regions to handle moves in the PCG e.g for the statement
 /// `let x: T<'a, 'b> = move c: T<'c, 'd>`.
 pub(crate) fn extract_regions(ty: ty::Ty<'_>) -> IndexVec<LifetimeProjectionIdx, PcgRegion<'_>> {
-    let mut visitor = LifetimeExtractor { lifetimes: vec![] };
-    ty.visit_with(&mut visitor);
-    visitor.lifetimes.iter().map(|r| (*r).into()).collect()
+    extract_generalized_lifetimes(ty, None)
+        .into_iter()
+        .map(|lifetime| match lifetime {
+            GeneralizedLifetime::Region(region) => region,
+            GeneralizedLifetime::RegionsIn(opaque) => PcgRegion::RegionsIn(opaque),
+        })
+        .collect()
 }
 
 /// An opaque type whose internal structure is not visible for lifetime
@@ -211,7 +183,10 @@ impl<'tcx> TypeVisitor<ty::TyCtxt<'tcx>> for GeneralizedLifetimeExtractor<'_, 't
             ty::TyKind::Dynamic(_, region, ..) => {
                 self.visit_region(*region);
             }
-            ty::TyKind::FnPtr(_, _) => {}
+            // Callable signatures and raw-pointer pointees mention types
+            // without owning values of them. In particular, a function-item
+            // constant has no resource group merely from its generic args.
+            ty::TyKind::FnPtr(_, _) | ty::TyKind::FnDef(..) | ty::TyKind::RawPtr(..) => {}
             ty::TyKind::Closure(_, args) => {
                 let closure_args = args.as_closure();
                 for ty in closure_args.upvar_tys() {

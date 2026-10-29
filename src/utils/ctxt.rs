@@ -425,6 +425,10 @@ pub trait HasTyCtxt<'tcx> {
     fn tcx(&self) -> TyCtxt<'tcx>;
 
     fn region_is_invariant_in_type(&self, region: PcgRegion<'tcx>, ty: ty::Ty<'tcx>) -> bool {
+        if matches!(region, PcgRegion::RegionsIn(_)) {
+            return true;
+        }
+
         let mut visitor = TyVarianceVisitor {
             tcx: self.tcx(),
             target: region,

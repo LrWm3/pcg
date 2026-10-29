@@ -196,7 +196,7 @@ fn generalized_outlives<'tcx>(
     use crate::borrow_pcg::visitor::extract_regions;
 
     let param_env = outlives_env.param_env;
-    let implied_type_outlives = collect_implied_type_outlives(input_tys);
+    let implied_type_outlives = collect_implied_type_outlives(input_tys, tcx);
 
     // BFS over the outlives graph starting from `sup`.
     let mut visited: HashSet<GeneralizedLifetime<'tcx>> = HashSet::default();
@@ -243,7 +243,10 @@ fn generalized_outlives<'tcx>(
                 // RegionsIn(T) -> Region(r): regions appearing in T itself
                 // (e.g. if T is `A<'a>` which was substituted for Self)
                 for r in extract_regions(ty) {
-                    let gl = GeneralizedLifetime::Region(r);
+                    let gl = match r {
+                        PcgRegion::RegionsIn(opaque) => GeneralizedLifetime::RegionsIn(opaque),
+                        region => GeneralizedLifetime::Region(region),
+                    };
                     if !visited.contains(&gl) {
                         queue.push(gl);
                     }
@@ -252,20 +255,20 @@ fn generalized_outlives<'tcx>(
         }
     }
 
-    // Handle Region -> Region: check the free_region_map for all visited
-    // regions against the sub target.
-    if let GeneralizedLifetime::Region(sub_r) = sub {
-        let sub_rust = sub_r.rust_region(tcx);
+    // Opaque groups are not Rust regions. Only concrete region pairs can be
+    // queried through rustc's free-region relation.
+    if let GeneralizedLifetime::Region(sub_r) = sub
+        && let Some(sub_rust) = sub_r.rust_region(tcx)
+    {
         for &v in &visited {
             if let GeneralizedLifetime::Region(r) = v
+                && let Some(rust_r) = r.rust_region(tcx)
                 && (r.is_static()
                     || (sub_rust.is_free()
-                        && r.rust_region(tcx).is_free()
-                        && outlives_env.free_region_map().sub_free_regions(
-                            tcx,
-                            sub_rust,
-                            r.rust_region(tcx),
-                        )))
+                        && rust_r.is_free()
+                        && outlives_env
+                            .free_region_map()
+                            .sub_free_regions(tcx, sub_rust, rust_r)))
             {
                 return true;
             }
@@ -334,12 +337,13 @@ impl<'tcx> TraitBoundRegions<'tcx> {
 /// Collects implied `T: 'r` bounds from reference types in the function
 /// signature. For `&'r T` or `&'r mut T` where `T` is a type parameter
 /// (or non-normalizable alias), well-formedness implies `T: 'r`.
-fn collect_implied_type_outlives<'tcx>(
+pub(crate) fn collect_implied_type_outlives<'tcx>(
     input_tys: &[ty::Ty<'tcx>],
+    tcx: ty::TyCtxt<'tcx>,
 ) -> HashMap<OpaqueTy<'tcx>, Vec<PcgRegion<'tcx>>> {
     let mut result: HashMap<OpaqueTy<'tcx>, Vec<PcgRegion<'tcx>>> = HashMap::default();
     for &ty in input_tys {
-        collect_implied_bounds_from_ty(ty, &mut result);
+        collect_implied_bounds_from_ty(tcx, ty, &mut result);
     }
     result
 }
@@ -350,31 +354,50 @@ fn collect_implied_type_outlives<'tcx>(
 /// - If `T` is a type parameter or non-normalizable alias, record `T: 'r`
 /// - Recurses into `T` for nested references
 fn collect_implied_bounds_from_ty<'tcx>(
+    tcx: ty::TyCtxt<'tcx>,
     ty: ty::Ty<'tcx>,
     result: &mut HashMap<OpaqueTy<'tcx>, Vec<PcgRegion<'tcx>>>,
 ) {
     match ty.kind() {
         ty::TyKind::Ref(region, referent, _) => {
             let r: PcgRegion<'tcx> = (*region).into();
-            if let Ok(opaque) = OpaqueTy::try_from(*referent) {
-                let entry = result.entry(opaque).or_default();
-                if !entry.contains(&r) {
-                    entry.push(r);
+            // Follow rustc's outlives decomposition, including bound-region
+            // and opaque-alias handling, rather than a syntactic type walk.
+            let mut components = Default::default();
+            ty::outlives::push_outlives_components(tcx, *referent, &mut components);
+            for component in components {
+                let opaque = match component {
+                    ty::outlives::Component::Param(param) => Some(OpaqueTy::Param(param)),
+                    ty::outlives::Component::Alias(_, alias) => referent.walk().find_map(|arg| {
+                        let candidate = arg.as_type()?;
+                        matches!(candidate.kind(), ty::TyKind::Alias(_, actual) if *actual == alias)
+                            .then_some(OpaqueTy::Alias(candidate))
+                    }),
+                    _ => None,
+                };
+                if let Some(opaque) = opaque {
+                    let entry = result.entry(opaque).or_default();
+                    if !entry.contains(&r) {
+                        entry.push(r);
+                    }
                 }
             }
-            collect_implied_bounds_from_ty(*referent, result);
+            collect_implied_bounds_from_ty(tcx, *referent, result);
         }
         ty::TyKind::Adt(_, args) => {
             for arg in *args {
                 if let Some(ty) = arg.as_type() {
-                    collect_implied_bounds_from_ty(ty, result);
+                    collect_implied_bounds_from_ty(tcx, ty, result);
                 }
             }
         }
         ty::TyKind::Tuple(tys) => {
             for ty in *tys {
-                collect_implied_bounds_from_ty(ty, result);
+                collect_implied_bounds_from_ty(tcx, ty, result);
             }
+        }
+        ty::TyKind::Slice(element) | ty::TyKind::Array(element, _) => {
+            collect_implied_bounds_from_ty(tcx, *element, result);
         }
         _ => {}
     }
@@ -800,6 +823,7 @@ impl<'a, 'tcx: 'a> DefinedFnCallShapeDataSource<'a, 'tcx> {
         tcx: ty::TyCtxt<'tcx>,
     ) -> Option<GeneralizedLifetime<'tcx>> {
         match region {
+            PcgRegion::RegionsIn(_) => self.norm_to_generalized_map.get(&region).copied(),
             PcgRegion::ReLateParam(_) | PcgRegion::ReStatic | PcgRegion::ReEarlyParam(_) => {
                 Some(GeneralizedLifetime::Region(region))
             }
@@ -881,13 +905,9 @@ impl<'a, 'tcx: 'a, Ctxt: HasBorrowCheckerCtxt<'a, 'tcx>> FunctionShapeDataSource
             return true;
         }
 
-        // When the identity result type is a type parameter T and `sub`
-        // maps to `RegionsIn(T)`, the concrete call-site region is "inside"
-        // T at the call site. Since T could contain borrows under any
-        // signature lifetime, check whether `sup_gl` outlives any of them.
-        //
-        // This only applies when T IS the identity result type — not when
-        // RegionsIn(T) arises from an input type parameter like Self.
+        // An explicit conversion-trait lifetime can connect an input borrow
+        // to resources of a generic result (e.g. T: FromMutref<'a>). This is
+        // a conservative call-shape relation, not an inferred T: 'a bound.
         let identity_result_ty = self
             .call
             .defined_fn_call
@@ -915,24 +935,10 @@ impl<'a, 'tcx: 'a, Ctxt: HasBorrowCheckerCtxt<'a, 'tcx>> FunctionShapeDataSource
                     return true;
                 }
             }
-            // Also check against all signature lifetimes (since T could
-            // contain borrows under any of them).
-            for input_ty in &identity_input_tys {
-                for gl in extract_generalized_lifetimes(*input_ty, Some(tbr_map)) {
-                    if matches!(gl, GeneralizedLifetime::Region(_))
-                        && generalized_outlives(
-                            sup_gl,
-                            gl,
-                            &self.outlives,
-                            &identity_input_tys,
-                            ctxt.tcx(),
-                        )
-                    {
-                        return true;
-                    }
-                }
-            }
         }
+        // Other signature lifetimes do not imply such a conversion. In
+        // particular, a short container borrow must not be connected to T
+        // merely because the method returns a T moved out of that container.
         false
     }
 }

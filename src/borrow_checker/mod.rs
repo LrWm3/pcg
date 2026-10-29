@@ -6,7 +6,7 @@ use std::{collections::BTreeSet, ops::ControlFlow};
 
 use crate::{
     borrow_checker::r#impl::get_reserve_location,
-    borrow_pcg::region_projection::PcgRegion,
+    borrow_pcg::{region_projection::PcgRegion, visitor::OpaqueTy},
     pcg::PcgNode,
     rustc_interface::{
         borrowck::{
@@ -403,15 +403,23 @@ pub trait RustBorrowCheckerInterface<'tcx> {
 
     fn location_table(&self) -> &LocationTable;
 
+    fn opaque_outlives(&self, _opaque: OpaqueTy<'tcx>, _region: PcgRegion<'tcx>) -> bool {
+        false
+    }
+
     /// Returns true iff `sup` is required to outlive `sub` everywhere.
     /// This can be useful e.g. for determining outlives relations of
     /// arguments to a function based on its signature.
     fn outlives_everywhere(&self, sup: PcgRegion<'tcx>, sub: PcgRegion<'tcx>) -> bool {
+        if sup == sub {
+            return true;
+        }
         match (sup, sub) {
             (PcgRegion::RegionVid(sup), PcgRegion::RegionVid(sub)) => {
                 self.region_infer_ctxt().eval_outlives(sup, sub)
             }
             (PcgRegion::ReStatic, _) => true,
+            (PcgRegion::RegionsIn(opaque), sub) => self.opaque_outlives(opaque, sub),
             _ => false,
         }
     }

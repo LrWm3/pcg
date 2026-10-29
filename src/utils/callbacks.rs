@@ -97,6 +97,17 @@ impl<'tcx> RustBorrowCheckerInterface<'tcx> for RustBorrowCheckerImpl<'_, 'tcx> 
         }
     }
 
+    fn opaque_outlives(
+        &self,
+        opaque: crate::borrow_pcg::visitor::OpaqueTy<'tcx>,
+        region: PcgRegion<'tcx>,
+    ) -> bool {
+        match self {
+            RustBorrowCheckerImpl::Polonius(bc) => bc.opaque_outlives(opaque, region),
+            RustBorrowCheckerImpl::Nll(bc) => bc.opaque_outlives(opaque, region),
+        }
+    }
+
     fn input_facts(&self) -> &PoloniusInput {
         match self {
             RustBorrowCheckerImpl::Polonius(bc) => bc.input_facts(),
