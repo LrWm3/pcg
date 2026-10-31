@@ -7,6 +7,32 @@ use pcg::{
 use pcg_tests::{BodySelector, run_pcg_on_str};
 
 #[test]
+fn unresolved_associated_result_keeps_its_opaque_interface() {
+    let source = r#"
+        fn target<T, I: std::slice::SliceIndex<[T]>>(values: &mut Vec<T>, index: I)
+            -> &mut <Vec<T> as std::ops::Index<I>>::Output { &mut values[index] }
+    "#;
+    run_pcg_on_str(source, BodySelector::FirstFunction, false, |analysis| {
+        let ctxt = analysis.ctxt();
+        let tcx = ctxt.tcx();
+        let signature = FunctionData::new(ctxt.def_id().to_def_id()).identity_fn_sig(tcx);
+        let pcg::rustc_interface::middle::ty::TyKind::Ref(_, referent, _) =
+            signature.output().kind()
+        else {
+            panic!("expected a borrowed associated result")
+        };
+        let pcg::rustc_interface::middle::ty::TyKind::Alias(_, alias) = referent.kind() else {
+            panic!("the generic SliceIndex output is still opaque")
+        };
+        let pcg::rustc_interface::middle::ty::AliasTyKind::Projection { def_id } = alias.kind
+        else {
+            panic!("expected a projection alias")
+        };
+        assert_eq!(tcx.item_name(tcx.parent(def_id)).as_str(), "Index");
+    });
+}
+
+#[test]
 fn normalized_associated_result_preserves_distinct_input_regions() {
     let source = r#"
         fn target<'a, 'b>(x: &'a mut u32, y: &'b mut u32)

@@ -738,9 +738,23 @@ impl<'tcx> FunctionData<'tcx> {
             >>::new(&infcx);
             at.deeply_normalize(sig, &mut *fulfill_cx)
         };
-        normalized
+        let normalized = normalized
             .unwrap()
-            .fold_with(&mut OpportunisticRegionResolver::new(&infcx))
+            .fold_with(&mut OpportunisticRegionResolver::new(&infcx));
+        // Keep an unresolved associated type's original opaque interface.
+        // Renaming Index::Output to SliceIndex::Output, for example, also
+        // requires an explicit resource-flow relation to that alias's inputs.
+        // Resolve the signature only when all associated types are concrete.
+        if normalized.inputs_and_output.iter().any(|ty| {
+            ty.walk().any(|arg| {
+                arg.as_type()
+                    .is_some_and(|ty| matches!(ty.kind(), ty::TyKind::Alias(..)))
+            })
+        }) {
+            sig
+        } else {
+            normalized
+        }
     }
 
     /// Returns the function signature instantiated with the given substs (but
