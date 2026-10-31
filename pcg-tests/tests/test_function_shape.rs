@@ -418,6 +418,33 @@ fn test_vec_into_iter_shape() {
     });
 }
 
+/// A definition-site associated result resolves to `IntoIter<T>`.
+/// Preserve its element resource flow, just as at the call site.
+#[test]
+fn test_vec_into_iter_signature_resources() {
+    let input = r#"
+        fn caller<T>(v: Vec<T>) {
+            let _iter = convert(v);
+        }
+        fn convert<T>(v: Vec<T>) -> <Vec<T> as IntoIterator>::IntoIter {
+            v.into_iter()
+        }
+    "#;
+    for polonius in [false, true] {
+        run_pcg_on_str(input, BodySelector::FirstFunction, polonius, |analysis| {
+            let ctxt = analysis.ctxt();
+            let call = find_call("convert", ctxt);
+            let shape = SigShape::for_fn_sig(call.fn_def_id(), ctxt).unwrap();
+            let expected = make_sig_shape(
+                &[arg_in(0, 0)],
+                &[result(0)],
+                &[(arg_in(0, 0), arg_out(0, 0)), (arg_in(0, 0), result(0))],
+            );
+            assert_shape_eq_with_formatter(&shape, &expected, None);
+        });
+    }
+}
+
 /// The associated `Iterator::Item` normalizes to a reference carrying the
 /// iterator's element lifetime, independently of the borrow of `self`.
 #[test]

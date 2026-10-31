@@ -699,7 +699,48 @@ impl<'tcx> FunctionData<'tcx> {
         } else {
             skip_normalization(tcx.fn_sig(self.def_id).instantiate_identity())
         };
-        tcx.liberate_late_bound_regions(self.def_id, fn_sig)
+        self.normalize_identity_sig(tcx, tcx.liberate_late_bound_regions(self.def_id, fn_sig))
+    }
+
+    #[rustversion::before(2025-05-24)]
+    fn normalize_identity_sig(
+        self,
+        _tcx: ty::TyCtxt<'tcx>,
+        sig: ty::FnSig<'tcx>,
+    ) -> ty::FnSig<'tcx> {
+        sig
+    }
+
+    #[rustversion::since(2025-05-24)]
+    fn normalize_identity_sig(
+        self,
+        tcx: ty::TyCtxt<'tcx>,
+        sig: ty::FnSig<'tcx>,
+    ) -> ty::FnSig<'tcx> {
+        // A concrete associated result can reveal several independent
+        // resource components (e.g. IntoIter<T, A>). Use that same signature
+        // for shape construction and projection mapping. Erasing regions here
+        // would lose the relation between a borrowed input and its result.
+        let typing_env = ty::TypingEnv::post_analysis(tcx, self.def_id)
+            .with_post_analysis_normalized(tcx);
+        let (infcx, param_env) = tcx.infer_ctxt().build_with_typing_env(typing_env);
+        let cause = ObligationCause::dummy();
+        let at = infcx.at(&cause, param_env);
+        #[rustversion::since(2026-08-04)]
+        let normalized = {
+            let mut fulfill_cx = FulfillmentEngine::<ScrubbedTraitError>::new(&infcx);
+            at.deeply_normalize(ty::Unnormalized::new(sig), &mut fulfill_cx)
+        };
+        #[rustversion::before(2026-08-04)]
+        let normalized = {
+            let mut fulfill_cx = <dyn TraitEngine<ScrubbedTraitError> as TraitEngineExt<
+                ScrubbedTraitError,
+            >>::new(&infcx);
+            at.deeply_normalize(sig, &mut *fulfill_cx)
+        };
+        normalized
+            .unwrap()
+            .fold_with(&mut OpportunisticRegionResolver::new(&infcx))
     }
 
     /// Returns the function signature instantiated with the given substs (but

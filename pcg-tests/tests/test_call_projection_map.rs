@@ -6,6 +6,47 @@ use pcg::{
 };
 use pcg_tests::{BodySelector, run_pcg_on_str};
 
+#[test]
+fn normalized_associated_result_preserves_distinct_input_regions() {
+    let source = r#"
+        fn target<'a, 'b>(x: &'a mut u32, y: &'b mut u32)
+            -> <Pair<'a, 'b> as Associated>::Output { (x, y) }
+        struct Pair<'a, 'b>(&'a mut u32, &'b mut u32);
+        trait Associated { type Output; }
+        impl<'a, 'b> Associated for Pair<'a, 'b> {
+            type Output = (&'a mut u32, &'b mut u32);
+        }
+    "#;
+    for polonius in [false, true] {
+        run_pcg_on_str(source, BodySelector::FirstFunction, polonius, |analysis| {
+            let ctxt = analysis.ctxt();
+            let tcx = ctxt.tcx();
+            let data = FunctionData::new(ctxt.def_id().to_def_id());
+            let signature = data.identity_fn_sig(tcx);
+            assert_ne!(signature.inputs()[0], signature.inputs()[1]);
+            assert_eq!(signature.output(), Ty::new_tup(tcx, signature.inputs()));
+
+            let a = Ty::new_mut_ref(tcx, tcx.lifetimes.re_static, tcx.types.u32);
+            let b = Ty::new_mut_ref(tcx, tcx.lifetimes.re_erased, tcx.types.u32);
+            let map = data
+                .call_projection_map(&[a, b], Ty::new_tup(tcx, &[a, b]), ctxt)
+                .unwrap();
+            for index in [0, 1] {
+                let base = ArgIdxOrResult::Argument(index.into());
+                assert_eq!(
+                    map.call_nodes(LifetimeProjection::from_index(base, 0.into())),
+                    Some([LifetimeProjection::from_index(base, 0.into())].as_slice())
+                );
+                let base = ArgIdxOrResult::Result;
+                assert_eq!(
+                    map.call_nodes(LifetimeProjection::from_index(base, index.into())),
+                    Some([LifetimeProjection::from_index(base, index.into())].as_slice())
+                );
+            }
+        });
+    }
+}
+
 // These tests supply deliberately chosen call types, independent of rustc's
 // inference choices, so collapse and expansion of lifetime indices are explicit.
 #[test]
