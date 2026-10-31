@@ -398,6 +398,71 @@ fn test_vec_deref_mut_reference_elements() {
     });
 }
 
+/// An associated output can carry resources from its type arguments. In the
+/// definition-site interface they must remain blocked until that output's
+/// opaque group expires, independently of its shorter outer reference.
+#[test]
+fn test_index_mut_associated_output_resource_dependencies() {
+    let input = r#"
+        fn caller<T>(values: &mut Vec<T>) {
+            let _value = std::ops::IndexMut::index_mut(values, 0usize);
+        }
+    "#;
+    run_pcg_on_str(input, BodySelector::FirstFunction, false, |analysis| {
+        let ctxt = analysis.ctxt();
+        let call = find_call("index_mut", ctxt);
+        let shape = SigShape::for_fn_sig(call.fn_def_id(), ctxt).unwrap();
+        let target = FunctionShapeOutput::from_index(ArgIdxOrResult::Result, 1.into());
+        for (argument, region) in [(0, 1), (1, 0)] {
+            let source = FunctionShapeInput::from_index(ArgIdx::from(argument), region.into());
+            assert!(
+                shape
+                    .edges()
+                    .any(|edge| edge.input() == source && edge.output() == target),
+                "associated output must retain input {source}: {shape}"
+            );
+        }
+        let storage = FunctionShapeInput::from_index(ArgIdx::from(0), 0.into());
+        assert!(
+            !shape
+                .edges()
+                .any(|edge| edge.input() == storage && edge.output() == target),
+            "the outer borrow is not a lifetime argument of the associated output: {shape}"
+        );
+    });
+}
+
+#[test]
+fn test_iterator_associated_item_resource_dependencies() {
+    let input = r#"
+        fn caller<I: Iterator>(iterator: &mut I) {
+            let _item = iterator.next();
+        }
+    "#;
+    run_pcg_on_str(input, BodySelector::FirstFunction, false, |analysis| {
+        let ctxt = analysis.ctxt();
+        let call = find_call("next", ctxt);
+        let signature = SigShape::for_fn_sig(call.fn_def_id(), ctxt).unwrap();
+        let call_shape = FunctionShape::for_fn_call(call, ctxt).unwrap();
+        let source = FunctionShapeInput::from_index(ArgIdx::from(0), 1.into());
+        let target = FunctionShapeOutput::from_index(ArgIdxOrResult::Result, 0.into());
+        assert!(
+            signature
+                .edges()
+                .any(|edge| edge.input() == source && edge.output() == target),
+            "Iterator::Item must retain the iterator's hidden resources: {signature}"
+        );
+        let source = FunctionShapeInput::from_index(ArgIdx::from(0), 1.into());
+        let target = FunctionShapeOutput::from_index(ArgIdxOrResult::Result, 0.into());
+        assert!(
+            call_shape
+                .edges()
+                .any(|edge| edge.input() == source && edge.output() == target),
+            "the call must preserve the definition-site resource dependency: {call_shape}"
+        );
+    });
+}
+
 /// `Vec<&'a mut i32>::into_iter` should have a 1-to-1 shape: the single
 /// region in the input (`'a` in `Vec<&'a mut i32>`) flows to the single
 /// region in the result (`'a` in `IntoIter<&'a mut i32>`).
