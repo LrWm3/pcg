@@ -451,7 +451,7 @@ pub(crate) struct DefinedFnCallShapeDataSource<'a, 'tcx> {
     /// types in parallel. When the identity type has a type parameter `T`, all
     /// regions from the corresponding concrete type in the normalized sig map
     /// to `RegionsIn(T)`.
-    norm_to_generalized_map: HashMap<PcgRegion<'tcx>, GeneralizedLifetime<'tcx>>,
+    norm_to_generalized_map: HashMap<PcgRegion<'tcx>, Vec<GeneralizedLifetime<'tcx>>>,
     outlives: OutlivesEnvironment<'tcx>,
     _marker: PhantomData<&'a ()>,
 }
@@ -551,7 +551,7 @@ impl<'a, 'tcx: 'a> DefinedFnCallShapeDataSource<'a, 'tcx> {
     fn build_norm_to_generalized_map(
         normalized_sig: &ty::FnSig<'tcx>,
         identity_sig: &ty::FnSig<'tcx>,
-    ) -> HashMap<PcgRegion<'tcx>, GeneralizedLifetime<'tcx>> {
+    ) -> HashMap<PcgRegion<'tcx>, Vec<GeneralizedLifetime<'tcx>>> {
         let mut map = HashMap::default();
         for (norm_ty, id_ty) in normalized_sig
             .inputs()
@@ -574,26 +574,35 @@ impl<'a, 'tcx: 'a> DefinedFnCallShapeDataSource<'a, 'tcx> {
     fn align_regions_to_generalized(
         norm_ty: ty::Ty<'tcx>,
         id_ty: ty::Ty<'tcx>,
-        map: &mut HashMap<PcgRegion<'tcx>, GeneralizedLifetime<'tcx>>,
+        map: &mut HashMap<PcgRegion<'tcx>, Vec<GeneralizedLifetime<'tcx>>>,
     ) {
         use crate::borrow_pcg::visitor::extract_regions;
+        // A normalized region can occur under both a parameter and an
+        // associated projection (e.g. Self and Self::Target). Both origins
+        // carry valid bounds; the result must not overwrite the input origin.
+        let mut record = |region, origin| {
+            let origins = map.entry(region).or_default();
+            if !origins.contains(&origin) {
+                origins.push(origin);
+            }
+        };
         match (norm_ty.kind(), id_ty.kind()) {
             // Identity type is a type parameter or non-normalizable alias: all
             // regions from the concrete normalized type map to RegionsIn(T).
             (_, ty::TyKind::Param(param_ty)) => {
                 let opaque = OpaqueTy::Param(*param_ty);
                 for r in extract_regions(norm_ty) {
-                    map.insert(r, GeneralizedLifetime::RegionsIn(opaque));
+                    record(r, GeneralizedLifetime::RegionsIn(opaque));
                 }
             }
             (_, ty::TyKind::Alias(..)) => {
                 let opaque = OpaqueTy::Alias(id_ty);
                 for r in extract_regions(norm_ty) {
-                    map.insert(r, GeneralizedLifetime::RegionsIn(opaque));
+                    record(r, GeneralizedLifetime::RegionsIn(opaque));
                 }
             }
             (ty::TyKind::Ref(norm_r, norm_referent, _), ty::TyKind::Ref(id_r, id_referent, _)) => {
-                map.insert(
+                record(
                     (*norm_r).into(),
                     GeneralizedLifetime::Region((*id_r).into()),
                 );
@@ -605,7 +614,11 @@ impl<'a, 'tcx: 'a> DefinedFnCallShapeDataSource<'a, 'tcx> {
                 for (norm_arg, id_arg) in norm_args.iter().zip(id_args.iter()) {
                     if let Some(norm_r) = norm_arg.as_region() {
                         if let Some(id_r) = id_arg.as_region() {
-                            map.insert(norm_r.into(), GeneralizedLifetime::Region(id_r.into()));
+                            let origins = map.entry(norm_r.into()).or_default();
+                            let origin = GeneralizedLifetime::Region(id_r.into());
+                            if !origins.contains(&origin) {
+                                origins.push(origin);
+                            }
                         }
                     } else if let Some(norm_inner) = norm_arg.as_type()
                         && let Some(id_inner) = id_arg.as_type()
@@ -626,7 +639,7 @@ impl<'a, 'tcx: 'a> DefinedFnCallShapeDataSource<'a, 'tcx> {
             }
             // Dynamic types: map the region.
             (ty::TyKind::Dynamic(_, norm_r, ..), ty::TyKind::Dynamic(_, id_r, ..)) => {
-                map.insert(
+                record(
                     (*norm_r).into(),
                     GeneralizedLifetime::Region((*id_r).into()),
                 );
@@ -810,7 +823,7 @@ fn renumbered_captures<'tcx>(
 }
 
 impl<'a, 'tcx: 'a> DefinedFnCallShapeDataSource<'a, 'tcx> {
-    /// Maps a normalized sig region to a generalized lifetime in the callee's
+    /// Maps a normalized sig region to generalized lifetimes in the callee's
     /// identity signature.
     ///
     /// First checks the pre-built `norm_to_generalized_map` (which handles
@@ -821,34 +834,40 @@ impl<'a, 'tcx: 'a> DefinedFnCallShapeDataSource<'a, 'tcx> {
         &self,
         region: PcgRegion<'tcx>,
         tcx: ty::TyCtxt<'tcx>,
-    ) -> Option<GeneralizedLifetime<'tcx>> {
+    ) -> Vec<GeneralizedLifetime<'tcx>> {
         match region {
-            PcgRegion::RegionsIn(_) => self.norm_to_generalized_map.get(&region).copied(),
+            PcgRegion::RegionsIn(_) => self
+                .norm_to_generalized_map
+                .get(&region)
+                .cloned()
+                .unwrap_or_default(),
             PcgRegion::ReLateParam(_) | PcgRegion::ReStatic | PcgRegion::ReEarlyParam(_) => {
-                Some(GeneralizedLifetime::Region(region))
+                vec![GeneralizedLifetime::Region(region)]
             }
             PcgRegion::RegionVid(_) => {
                 // First try the structural map, which captures late-bound
                 // regions and regions inside type parameters.
-                if let Some(&gl) = self.norm_to_generalized_map.get(&region) {
-                    return Some(gl);
+                if let Some(origins) = self.norm_to_generalized_map.get(&region) {
+                    return origins.clone();
                 }
                 // Fall back to searching caller_substs for early-bound regions.
                 let caller_substs = self.call.caller_substs();
-                let index = caller_substs.iter().position(|arg| {
+                let Some(index) = caller_substs.iter().position(|arg| {
                     arg.as_region()
                         .is_some_and(|r| PcgRegion::from(r) == region)
-                })?;
+                }) else {
+                    return Vec::new();
+                };
                 let fn_ty =
                     skip_normalization(tcx.type_of(self.call.fn_def_id()).instantiate_identity());
                 let ty::TyKind::FnDef(_def_id, identity_substs) = fn_ty.kind() else {
                     panic!("Expected a function type");
                 };
-                Some(GeneralizedLifetime::Region(
+                vec![GeneralizedLifetime::Region(
                     fn_def_args(identity_substs).region_at(index).into(),
-                ))
+                )]
             }
-            _ => None,
+            _ => Vec::new(),
         }
     }
 }
@@ -885,12 +904,26 @@ impl<'a, 'tcx: 'a, Ctxt: HasBorrowCheckerCtxt<'a, 'tcx>> FunctionShapeDataSource
         // Map to generalized lifetimes in the identity signature and check
         // outlives using the generalized lifetime graph (which handles trait
         // bounds, type parameters, and implied bounds).
-        let Some(sup_gl) = sup_norm.and_then(|r| self.normalized_to_identity(r, ctxt.tcx())) else {
+        let (Some(sup_norm), Some(sub_norm)) = (sup_norm, sub_norm) else {
             return false;
         };
-        let Some(sub_gl) = sub_norm.and_then(|r| self.normalized_to_identity(r, ctxt.tcx())) else {
-            return false;
-        };
+        let sup_origins = self.normalized_to_identity(sup_norm, ctxt.tcx());
+        let sub_origins = self.normalized_to_identity(sub_norm, ctxt.tcx());
+        sup_origins.iter().any(|sup_gl| {
+            sub_origins
+                .iter()
+                .any(|sub_gl| self.origins_outlive(*sup_gl, *sub_gl, ctxt))
+        })
+    }
+}
+
+impl<'a, 'tcx: 'a> DefinedFnCallShapeDataSource<'a, 'tcx> {
+    fn origins_outlive(
+        &self,
+        sup_gl: GeneralizedLifetime<'tcx>,
+        sub_gl: GeneralizedLifetime<'tcx>,
+        ctxt: impl HasBorrowCheckerCtxt<'a, 'tcx>,
+    ) -> bool {
         if sup_gl == sub_gl {
             return true;
         }

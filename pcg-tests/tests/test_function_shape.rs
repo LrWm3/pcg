@@ -370,6 +370,34 @@ fn test_deref_mut_alias_output() {
     });
 }
 
+/// Normalizing `Self::Target` to a reference-containing slice must not erase
+/// the same element region's origin in `Self`. That origin establishes that
+/// the element resources outlive the returned slice's outer borrow.
+#[test]
+fn test_vec_deref_mut_reference_elements() {
+    let input = r#"
+        fn caller<'a>(value: &mut Vec<&'a mut i32>) {
+            let _view = std::ops::DerefMut::deref_mut(value);
+        }
+    "#;
+    run_pcg_on_str(input, BodySelector::FirstFunction, false, |analysis| {
+        let ctxt = analysis.ctxt();
+        let call = find_call("deref_mut", ctxt);
+        let shape = FunctionShape::for_fn_call(call, ctxt).unwrap();
+        let expected = make_shape(
+            &[arg_in(0, 0), arg_in(0, 1)],
+            &[result(0), result(1)],
+            &[
+                (arg_in(0, 0), result(0)),
+                (arg_in(0, 1), arg_out(0, 1)),
+                (arg_in(0, 1), result(0)),
+                (arg_in(0, 1), result(1)),
+            ],
+        );
+        assert_shape_eq(&shape, &expected);
+    });
+}
+
 /// `Vec<&'a mut i32>::into_iter` should have a 1-to-1 shape: the single
 /// region in the input (`'a` in `Vec<&'a mut i32>`) flows to the single
 /// region in the result (`'a` in `IntoIter<&'a mut i32>`).
@@ -409,10 +437,7 @@ fn test_slice_iter_mut_next_shape() {
         let expected = make_shape(
             &[arg_in(0, 0), arg_in(0, 1)],
             &[result(0)],
-            &[
-                (arg_in(0, 1), arg_out(0, 1)),
-                (arg_in(0, 1), result(0)),
-            ],
+            &[(arg_in(0, 1), arg_out(0, 1)), (arg_in(0, 1), result(0))],
         );
         assert_shape_eq(&shape, &expected);
     });
