@@ -210,6 +210,10 @@ impl LabelPlaceReason {
                 // We don't want an edge like "x.f at bb2[6] |'a -> x|'a at FUTURE"
                 LabelNodePredicate::not(LabelNodePredicate::And(vec![
                     LabelNodePredicate::PlaceEquals(place),
+                    // A collapsed expansion's source is a historical
+                    // snapshot. A later write must not make that snapshot
+                    // follow the replacement value and its new expansion.
+                    LabelNodePredicate::not(LabelNodePredicate::BorrowFlowTargetIsOld),
                     LabelNodePredicate::InSourceNodes,
                     LabelNodePredicate::EdgeType(BorrowPcgEdgeType::BorrowFlow {
                         future_edge_kind: Some(FutureEdgeKind::FromExpansion),

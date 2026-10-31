@@ -87,6 +87,7 @@ fn map_label_predicate<'tcx, P: Copy>(
         LabelNodePredicate::EdgeType(edge_type) => LabelNodePredicate::EdgeType(*edge_type),
         LabelNodePredicate::InSourceNodes => LabelNodePredicate::InSourceNodes,
         LabelNodePredicate::InTargetNodes => LabelNodePredicate::InTargetNodes,
+        LabelNodePredicate::BorrowFlowTargetIsOld => LabelNodePredicate::BorrowFlowTargetIsOld,
     }
 }
 

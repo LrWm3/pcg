@@ -14,7 +14,7 @@ use std::{
 use borrowck_body_storage::{set_mir_borrowck, take_stored_body};
 use pcg::{
     PcgCtxtCreator,
-    borrow_checker::r#impl::PoloniusBorrowChecker,
+    borrow_checker::r#impl::{NllBorrowCheckerImpl, PoloniusBorrowChecker},
     results::PcgAnalysisResults,
     run_pcg,
     rustc_interface::{
@@ -85,6 +85,7 @@ struct TestCallbacks {
     input: String,
     selector: BodySelector,
     validity_checks: bool,
+    nll: bool,
     callback: Option<Box<TestCallback>>,
 }
 
@@ -102,6 +103,7 @@ impl driver::Callbacks for TestCallbacks {
                 tcx,
                 self.selector,
                 self.validity_checks,
+                self.nll,
                 self.callback.take().unwrap(),
             );
         }
@@ -120,6 +122,7 @@ unsafe fn run_pcg_on_body<'tcx>(
     tcx: TyCtxt<'tcx>,
     selector: BodySelector,
     validity_checks: bool,
+    nll: bool,
     callback: impl for<'mir, 'arena> Fn(PcgAnalysisResults<'mir, 'tcx>) + Send + Sync + 'static,
 ) {
     let def_id = selector.select(tcx);
@@ -127,7 +130,11 @@ unsafe fn run_pcg_on_body<'tcx>(
     let mut settings = PcgSettings::new();
     settings.validity_checks = validity_checks;
     let ctxt_creator = PcgCtxtCreator::with_settings(tcx, settings);
-    let bc = RustBorrowCheckerImpl::Polonius(PoloniusBorrowChecker::new(tcx, &body));
+    let bc = if nll {
+        RustBorrowCheckerImpl::Nll(NllBorrowCheckerImpl::new(tcx, &body))
+    } else {
+        RustBorrowCheckerImpl::Polonius(PoloniusBorrowChecker::new(tcx, &body))
+    };
     let pcg_ctxt = ctxt_creator.new_ctxt(&body, &bc);
     let output = run_pcg(pcg_ctxt);
     callback(output);
@@ -137,6 +144,16 @@ pub fn run_pcg_on_str(
     input: &str,
     selector: BodySelector,
     validity_checks: bool,
+    callback: impl for<'mir, 'tcx> Fn(PcgAnalysisResults<'mir, 'tcx>) + Send + Sync + 'static,
+) {
+    run_pcg_on_str_with_borrow_checker(input, selector, validity_checks, false, callback);
+}
+
+pub fn run_pcg_on_str_with_borrow_checker(
+    input: &str,
+    selector: BodySelector,
+    validity_checks: bool,
+    nll: bool,
     callback: impl for<'mir, 'tcx> Fn(PcgAnalysisResults<'mir, 'tcx>) + Send + Sync + 'static,
 ) {
     run_compiler(
@@ -152,6 +169,7 @@ pub fn run_pcg_on_str(
             input: input.to_string(),
             selector,
             validity_checks,
+            nll,
             callback: Some(Box::new(callback)),
         },
     );

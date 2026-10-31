@@ -11,6 +11,39 @@ use pcg::{
 use pcg_tests::{BodySelector, run_pcg_on_str};
 
 #[test]
+fn generic_index_replacement_has_acyclic_return_dependencies() {
+    use pcg::borrow_pcg::{region_projection::LifetimeProjection, unblock_graph::UnblockGraph};
+    use pcg::utils::place::remote::RemotePlace;
+    for nll in [false, true] {
+        pcg_tests::run_pcg_on_str_with_borrow_checker(
+            "fn target<T>(values: &mut [T], index: usize, replacement: T) { values[index] = replacement; }",
+            BodySelector::FirstFunction,
+            true,
+            nll,
+            move |mut analysis| {
+                let ctxt = analysis.ctxt();
+                let mut checked = false;
+                for (block, body) in ctxt.body().basic_blocks.iter_enumerated() {
+                    if !matches!(body.terminator().kind, mir::TerminatorKind::Return) {
+                        continue;
+                    }
+                    let data = analysis.get_all_for_bb(block).unwrap().unwrap();
+                    let state = data.statements.last().unwrap().states[EvalStmtPhase::PreMain].borrow_pcg();
+                    let root = LifetimeProjection::from_index(
+                        RemotePlace::new(mir::Local::from_usize(1)), 1.into(),
+                    );
+                    UnblockGraph::for_node(root, &state, ctxt)
+                        .actions(ctxt)
+                        .unwrap_or_else(|error| panic!("return dependencies cycle (nll={nll}): {error:?}"));
+                    checked = true;
+                }
+                assert!(checked);
+            },
+        );
+    }
+}
+
+#[test]
 fn opaque_resources_are_retained_in_generic_body_edges() {
     run_pcg_on_str(
         "fn target<T>(x: T) -> T { x }",

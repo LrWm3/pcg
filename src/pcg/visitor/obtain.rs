@@ -650,6 +650,10 @@ impl<'state, 'a: 'state, 'tcx: 'a, Ctxt: DataflowCtxt<'a, 'tcx>>
                     BorrowPcgAction::label_lifetime_projection(
                         LabelNodePredicate::And(vec![
                             LabelNodePredicate::PlaceEquals(place),
+                            // Only the live expansion follows this write.
+                            // Historical element snapshots retain their
+                            // labels when the same place is expanded again.
+                            LabelNodePredicate::PlaceLabelEquals(None),
                             LabelNodePredicate::InSourceNodes,
                             LabelNodePredicate::EdgeType(BorrowPcgEdgeType::BorrowFlow {
                                 future_edge_kind: Some(FutureEdgeKind::FromExpansion),

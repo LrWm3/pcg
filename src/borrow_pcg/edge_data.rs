@@ -192,6 +192,8 @@ pub enum LabelNodePredicate<'tcx, P = Place<'tcx>> {
     Or(Vec<Self>),
     Not(Box<Self>),
     EdgeType(BorrowPcgEdgeType),
+    /// A borrow-flow edge whose target base is a historical place snapshot.
+    BorrowFlowTargetIsOld,
     InSourceNodes,
     InTargetNodes,
 }
@@ -286,6 +288,7 @@ impl<'a, 'tcx: 'a, Ctxt: HasBorrowCheckerCtxt<'a, 'tcx>> DisplayWithCtxt<Ctxt>
             }
             LabelNodePredicate::EdgeType(edge_type) => format!("edge_type({edge_type:?})").into(),
             LabelNodePredicate::InSourceNodes => "in_source_nodes".into(),
+            LabelNodePredicate::BorrowFlowTargetIsOld => "borrow_flow_target_is_old".into(),
             LabelNodePredicate::InTargetNodes => "in_target_nodes".into(),
             LabelNodePredicate::LifetimeProjectionLabelEquals(label) => {
                 format!("rp_label({label:?})").into()
@@ -326,6 +329,7 @@ impl<'tcx, P: PcgNodeComponent + PrefixRelation> LabelNodePredicate<'tcx, P> {
                 .any(|p| p.applies_to(candidate, label_context)),
             LabelNodePredicate::Not(predicate) => !predicate.applies_to(candidate, label_context),
             LabelNodePredicate::EdgeType(edge_type) => label_context.edge_type() == *edge_type,
+            LabelNodePredicate::BorrowFlowTargetIsOld => label_context.borrow_flow_target_is_old(),
             LabelNodePredicate::InSourceNodes => {
                 label_context.source_or_target() == SourceOrTarget::Source
             }

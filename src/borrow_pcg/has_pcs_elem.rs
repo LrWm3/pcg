@@ -68,6 +68,7 @@ pub(crate) enum SourceOrTarget {
 pub(crate) struct LabelNodeContext {
     source_or_target: SourceOrTarget,
     edge_type: BorrowPcgEdgeType,
+    borrow_flow_target_is_old: bool,
 }
 
 impl LabelNodeContext {
@@ -75,7 +76,17 @@ impl LabelNodeContext {
         Self {
             source_or_target,
             edge_type,
+            borrow_flow_target_is_old: false,
         }
+    }
+
+    pub(crate) fn with_borrow_flow_target_is_old(mut self, is_old: bool) -> Self {
+        self.borrow_flow_target_is_old = is_old;
+        self
+    }
+
+    pub(crate) fn borrow_flow_target_is_old(self) -> bool {
+        self.borrow_flow_target_is_old
     }
 
     pub(crate) fn source_or_target(self) -> SourceOrTarget {

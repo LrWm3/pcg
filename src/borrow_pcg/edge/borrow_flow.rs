@@ -21,7 +21,7 @@ use crate::{
             LocalLifetimeProjection, PcgLifetimeProjectionBase,
         },
     },
-    pcg::{PcgNode, PcgNodeLike},
+    pcg::{MaybeHasLocation, PcgNode, PcgNodeLike},
     rustc_interface::middle::{mir, ty},
     utils::{
         DebugCtxt, DebugRepr, HasBorrowCheckerCtxt, PcgPlace, Place,
@@ -68,7 +68,7 @@ where
             LabelNodeContext::new(
                 SourceOrTarget::Source,
                 BorrowPcgEdgeType::BorrowFlow { future_edge_kind },
-            ),
+            ).with_borrow_flow_target_is_old(self.target.base().location().is_some()),
             ctxt,
         )
     }
@@ -80,6 +80,7 @@ where
         ctxt: Ctxt,
     ) -> HashSet<NodeReplacement<'tcx, P>> {
         let future_edge_kind = self.future_edge_kind();
+        let target_is_old = self.target.base().location().is_some();
         conditionally_label_places(
             vec![&mut self.target],
             predicate,
@@ -87,7 +88,7 @@ where
             LabelNodeContext::new(
                 SourceOrTarget::Target,
                 BorrowPcgEdgeType::BorrowFlow { future_edge_kind },
-            ),
+            ).with_borrow_flow_target_is_old(target_is_old),
             ctxt,
         )
     }
@@ -117,11 +118,13 @@ where
         };
         let long_matches = predicate.applies_to(
             PcgNode::LifetimeProjection(self.source),
-            LabelNodeContext::new(SourceOrTarget::Source, edge_type),
+            LabelNodeContext::new(SourceOrTarget::Source, edge_type)
+                .with_borrow_flow_target_is_old(self.target.base().location().is_some()),
         );
         let short_matches = predicate.applies_to(
             PcgNode::LifetimeProjection(self.target.rebase()),
-            LabelNodeContext::new(SourceOrTarget::Target, edge_type),
+            LabelNodeContext::new(SourceOrTarget::Target, edge_type)
+                .with_borrow_flow_target_is_old(self.target.base().location().is_some()),
         );
         if long_matches && short_matches {
             return LabelLifetimeProjectionResult::ShouldCollapse;
