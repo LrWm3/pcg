@@ -95,52 +95,55 @@ fn owned_iterator_loop_restores_one_opaque_input_once() {
             && matches!(**inputs.first().unwrap(), PcgNode::LifetimeProjection(projection)
                 if matches!(projection.region(ctxt), PcgRegion::RegionsIn(_)))
     }
-    run_pcg_on_str(
-        r#"
-        fn count<T>(values: Vec<T>) -> usize {
-            let mut other = Vec::<T>::new().into_iter();
-            let mut count = 0;
-            for _value in values {
-                let _ = other.next();
-                count += 1;
-            }
-            count
-        }
-        "#,
-        BodySelector::FirstFunction,
-        true,
-        |mut analysis| {
-            let ctxt = analysis.ctxt();
-            let mut joint_input = false;
-            let mut entry_obligation = false;
-            for block in ctxt.body().basic_blocks.indices() {
-                let Some(data) = analysis.get_all_for_bb(block).unwrap() else {
-                    continue;
-                };
-                for statement in &data.statements {
-                    for edge in statement.states[EvalStmtPhase::PreOperands]
-                        .borrow_pcg()
-                        .graph()
-                        .edges()
-                    {
-                        if let BorrowPcgEdgeKind::Coupled(edge) = edge.kind() {
-                            joint_input |= restores_opaque_input(edge, ctxt);
-                        }
-                    }
+    for nll in [false, true] {
+        pcg_tests::run_pcg_on_str_with_borrow_checker(
+            r#"
+            fn count<T>(values: Vec<T>) -> usize {
+                let mut other = Vec::<T>::new().into_iter();
+                let mut count = 0;
+                for _value in values {
+                    let _ = other.next();
+                    count += 1;
                 }
-                for successor in &data.terminator.succs {
-                    for action in successor.actions().iter() {
-                        if let PcgAction::Borrow(action) = action
-                            && let BorrowPcgActionKind::AddEdge { edge } = action.kind()
-                            && let BorrowPcgEdgeKind::Coupled(edge) = edge.kind()
+                count
+            }
+            "#,
+            BodySelector::FirstFunction,
+            true,
+            nll,
+            move |mut analysis| {
+                let ctxt = analysis.ctxt();
+                let mut joint_input = false;
+                let mut entry_obligation = false;
+                for block in ctxt.body().basic_blocks.indices() {
+                    let Some(data) = analysis.get_all_for_bb(block).unwrap() else {
+                        continue;
+                    };
+                    for statement in &data.statements {
+                        for edge in statement.states[EvalStmtPhase::PreOperands]
+                            .borrow_pcg()
+                            .graph()
+                            .edges()
                         {
-                            entry_obligation |= restores_opaque_input(edge, ctxt);
+                            if let BorrowPcgEdgeKind::Coupled(edge) = edge.kind() {
+                                joint_input |= restores_opaque_input(edge, ctxt);
+                            }
+                        }
+                    }
+                    for successor in &data.terminator.succs {
+                        for action in successor.actions().iter() {
+                            if let PcgAction::Borrow(action) = action
+                                && let BorrowPcgActionKind::AddEdge { edge } = action.kind()
+                                && let BorrowPcgEdgeKind::Coupled(edge) = edge.kind()
+                            {
+                                entry_obligation |= restores_opaque_input(edge, ctxt);
+                            }
                         }
                     }
                 }
-            }
-            assert!(joint_input, "one opaque input must not become independent loop obligations");
-            assert!(entry_obligation, "loop entry must establish the joint input obligation");
-        },
-    );
+                assert!(joint_input, "one opaque input must not become independent loop obligations");
+                assert!(entry_obligation, "loop entry must establish the joint input obligation");
+            },
+        );
+    }
 }
