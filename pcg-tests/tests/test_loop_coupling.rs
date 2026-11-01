@@ -3,7 +3,8 @@
 use pcg::{
     action::PcgAction,
     borrow_pcg::{
-        action::BorrowPcgActionKind, edge::kind::BorrowPcgEdgeKind,
+        action::BorrowPcgActionKind,
+        edge::{abstraction::AbstractionEdge, kind::BorrowPcgEdgeKind},
         region_projection::PcgRegion,
     },
     pcg::{EvalStmtPhase, PcgNode},
@@ -131,7 +132,35 @@ fn owned_iterator_loop_restores_one_opaque_input_once() {
                         }
                     }
                     for successor in &data.terminator.succs {
+                        let mut restored = std::collections::HashSet::new();
                         for action in successor.actions().iter() {
+                            if let PcgAction::Borrow(action) = action
+                                && let BorrowPcgActionKind::AddEdge { edge } = action.kind()
+                            {
+                                let loop_edge = match edge.kind() {
+                                    BorrowPcgEdgeKind::Coupled(edge)
+                                        if edge.loop_head().is_some() =>
+                                    {
+                                        Some(edge.clone())
+                                    }
+                                    BorrowPcgEdgeKind::Abstraction(
+                                        edge @ AbstractionEdge::Loop(_),
+                                    ) => Some(edge.clone().into_singleton_coupled_edge()),
+                                    _ => None,
+                                };
+                                if let Some(edge) = loop_edge {
+                                    for input in edge.inputs(ctxt) {
+                                        if matches!(*input, PcgNode::LifetimeProjection(projection)
+                                            if matches!(projection.region(ctxt), PcgRegion::RegionsIn(_)))
+                                        {
+                                            assert!(
+                                                restored.insert(input),
+                                                "loop entry must not restore one opaque input through separate obligations: {input:?}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                             if let PcgAction::Borrow(action) = action
                                 && let BorrowPcgActionKind::AddEdge { edge } = action.kind()
                                 && let BorrowPcgEdgeKind::Coupled(edge) = edge.kind()
@@ -141,8 +170,14 @@ fn owned_iterator_loop_restores_one_opaque_input_once() {
                         }
                     }
                 }
-                assert!(joint_input, "one opaque input must not become independent loop obligations");
-                assert!(entry_obligation, "loop entry must establish the joint input obligation");
+                assert!(
+                    joint_input,
+                    "one opaque input must not become independent loop obligations"
+                );
+                assert!(
+                    entry_obligation,
+                    "loop entry must establish the joint input obligation"
+                );
             },
         );
     }

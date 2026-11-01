@@ -91,7 +91,17 @@ impl<'a, 'tcx: 'a, Ctxt: DataflowCtxt<'a, 'tcx>> PcgVisitor<'_, 'a, 'tcx, Ctxt> 
             let ArgIdxOrResult::Argument(argument) = output.base else {
                 return true;
             };
-            let ty = call.inputs[*argument].ty(self.ctxt.body(), self.ctxt.tcx());
+            let operand = call.inputs[*argument];
+            let ty = operand.ty(self.ctxt.body(), self.ctxt.tcx());
+            // Moving an owned argument consumes its storage. Its referents
+            // can flow into the result, but there is no post-call value left
+            // in the argument slot. Retaining that phantom output makes loop
+            // reconstruction restore the same pre-call input twice.
+            // A moved reference still denotes an external referent, whose
+            // post-call projections remain relevant to borrow expiry.
+            if matches!(operand, Operand::Move(_)) && !matches!(ty.kind(), ty::TyKind::Ref(..)) {
+                return false;
+            }
             !matches!(ty.kind(), ty::TyKind::Ref(_, _, ty::Mutability::Mut))
                 || !shape.edges().any(|edge| {
                     edge.input().base == argument
