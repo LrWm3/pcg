@@ -93,6 +93,7 @@ where
         }
         let sig = self.sig(ctxt.tcx());
         generalized_outlives(sup, sub, &self.outlives, sig.inputs(), ctxt.tcx())
+            || associated_type_may_capture(sup, sub)
     }
 
     fn input_arg_projections(
@@ -276,6 +277,37 @@ fn generalized_outlives<'tcx>(
     }
 
     false
+}
+
+/// A projection's output may contain resources from its type/lifetime
+/// arguments. Keep those sources blocked by the opaque output group until
+/// that group expires. This is a conservative resource-flow dependency, not
+/// an inferred Rust outlives bound: an associated type can select only part
+/// of its arguments or contain no references at all.
+fn associated_type_may_capture<'tcx>(
+    source: GeneralizedLifetime<'tcx>,
+    target: GeneralizedLifetime<'tcx>,
+) -> bool {
+    let GeneralizedLifetime::RegionsIn(OpaqueTy::Alias(target)) = target else {
+        return false;
+    };
+    let ty::TyKind::Alias(_, alias) = target.kind() else {
+        return false;
+    };
+    alias
+        .args
+        .iter()
+        .flat_map(|argument| argument.walk())
+        .any(|argument| {
+            if let Some(region) = argument.as_region() {
+                source == GeneralizedLifetime::Region(region.into())
+            } else if let Some(ty) = argument.as_type() {
+                OpaqueTy::try_from(ty)
+                    .is_ok_and(|opaque| source == GeneralizedLifetime::RegionsIn(opaque))
+            } else {
+                false
+            }
+        })
 }
 
 /// Per-type-parameter collection of regions that appear in trait bounds.
@@ -721,8 +753,8 @@ impl<'tcx> FunctionData<'tcx> {
         // resource components (e.g. IntoIter<T, A>). Use that same signature
         // for shape construction and projection mapping. Erasing regions here
         // would lose the relation between a borrowed input and its result.
-        let typing_env = ty::TypingEnv::post_analysis(tcx, self.def_id)
-            .with_post_analysis_normalized(tcx);
+        let typing_env =
+            ty::TypingEnv::post_analysis(tcx, self.def_id).with_post_analysis_normalized(tcx);
         let (infcx, param_env) = tcx.infer_ctxt().build_with_typing_env(typing_env);
         let cause = ObligationCause::dummy();
         let at = infcx.at(&cause, param_env);
@@ -989,7 +1021,8 @@ impl<'a, 'tcx: 'a> DefinedFnCallShapeDataSource<'a, 'tcx> {
             &self.outlives,
             &identity_input_tys,
             ctxt.tcx(),
-        ) {
+        ) || associated_type_may_capture(sup_gl, sub_gl)
+        {
             return true;
         }
 
