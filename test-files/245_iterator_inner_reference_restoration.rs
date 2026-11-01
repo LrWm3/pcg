@@ -3,8 +3,10 @@
 //! behind a future projection after the iterator and both yields have died.
 
 fn visit(values: &mut [&mut u32]) {
-    // PCG: bb8[6] pre_operands: Remove Edge call core::slice::<impl [T]>::iter_mut at bb0[3]: [_3 before bb0[3]:PostOperands↓'?33 before bb0[3]:PostMain, _3 before bb0[3]:PostOperands↓'?34 before bb0[3]:PostMain] -> [it before bb3[4]:PostOperands↓'?31 before bb1[4]:PostMain, it before bb3[4]:PostOperands↓'?32 before bb1[4]:PostMain] under conditions bb4 -> bb6, bb6 -> bb7
-    // PCG: bb0[3] post_main: call core::slice::<impl [T]>::iter_mut at bb0[3]: [_3 before bb0[3]:PostOperands↓'?33 before bb0[3]:PostMain, _3 before bb0[3]:PostOperands↓'?34 before bb0[3]:PostMain] -> [it↓'?31, it↓'?32]
+    // PCG: bb0[3] post_main: call core::slice::<impl [T]>::iter_mut at bb0[3]: [_3 before bb0[3]:PostOperands↓'?34 before bb0[3]:PostMain] -> [it↓'?31, it↓'?32]
+    // PCG: bb0[3] post_main: call core::slice::<impl [T]>::iter_mut at bb0[3]: _3 before bb0[3]:PostOperands↓'?33 before bb0[3]:PostMain -> it↓'?31
+    // PCG: bb8[6] pre_operands: Remove Edge call core::slice::<impl [T]>::iter_mut at bb0[3]: _3 before bb0[3]:PostOperands↓'?33 before bb0[3]:PostMain -> it before bb3[4]:PostOperands↓'?31 before bb1[4]:PostMain under conditions bb4 -> bb6, bb6 -> bb7
+    // PCG: bb8[6] pre_operands: Remove Edge call core::slice::<impl [T]>::iter_mut at bb0[3]: [_3 before bb0[3]:PostOperands↓'?34 before bb0[3]:PostMain] -> [it before bb3[4]:PostOperands↓'?31 before bb1[4]:PostMain, it before bb3[4]:PostOperands↓'?32 before bb1[4]:PostMain] under conditions bb4 -> bb6, bb6 -> bb7
     let mut it = values.iter_mut();
     let first = it.next();
     let second = it.next();

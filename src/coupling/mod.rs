@@ -92,9 +92,112 @@ impl From<MakeFunctionShapeError> for CoupleAbstractionError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoupleInputError;
 
+#[cfg(test)]
+mod function_stage_tests {
+    use super::*;
+
+    fn edges(pairs: &[(u8, u8)]) -> Vec<AbstractionBlockEdge<'static, u8, u8>> {
+        pairs
+            .iter()
+            .map(|&(i, o)| AbstractionBlockEdge::new(i, o))
+            .collect()
+    }
+
+    fn relation(groups: CoupledEdgesData<u8, u8>) -> HashSet<(u8, u8)> {
+        groups
+            .into_iter()
+            .flat_map(|group| {
+                group
+                    .inputs()
+                    .iter()
+                    .flat_map(|&input| group.outputs().iter().map(move |&output| (input, output)))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn nested_calls_do_not_delay_storage_on_escaped_referents() {
+        let original = [(0, 0), (1, 0), (1, 1)];
+        let groups = CoupledEdgesData::new_for_function(edges(&original));
+        assert_eq!(groups.len(), 2);
+        assert_eq!(relation(groups), HashSet::from_iter(original));
+        // Loop coupling still owns a single joint restoration obligation.
+        assert_eq!(CoupledEdgesData::new(edges(&original)).len(), 1);
+    }
+
+    #[test]
+    fn identical_target_sets_remain_one_obligation() {
+        let original = [(0, 0), (0, 1), (1, 0), (1, 1)];
+        let groups = CoupledEdgesData::new_for_function(edges(&original));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(relation(groups), HashSet::from_iter(original));
+    }
+
+    #[test]
+    fn crossing_outputs_keep_conservative_coupling() {
+        let original = [(0, 0), (0, 1), (1, 1), (1, 2)];
+        let groups = CoupledEdgesData::new_for_function(edges(&original));
+        assert_eq!(groups.len(), 1);
+        let actual = relation(groups);
+        assert!(original.into_iter().all(|edge| actual.contains(&edge)));
+        assert!(actual.contains(&(0, 2)) && actual.contains(&(1, 0)));
+    }
+
+    #[test]
+    fn disjoint_calls_and_empty_calls_preserve_their_relations() {
+        for original in [vec![], vec![(0, 0), (1, 1)], vec![(0, 0), (0, 1), (1, 2)]] {
+            let groups = CoupledEdgesData::new_for_function(edges(&original));
+            assert_eq!(relation(groups), HashSet::from_iter(original));
+        }
+    }
+}
+
 impl<InputNode: Eq + Hash + Copy, OutputNode: Eq + Hash + Copy>
     CoupledEdgesData<InputNode, OutputNode>
 {
+    /// Preserve independent expiry of nested function-output sets. Connecting
+    /// every source in a component to every output would additionally block a
+    /// short outer borrow on references which escape from its contents.
+    /// Equal target sets remain coupled. Crossing target sets retain the
+    /// conservative component coupling; consumers may stage nested sets by
+    /// framing the resources restored by earlier stages.
+    pub(crate) fn new_for_function(
+        edges: impl IntoIterator<Item = AbstractionBlockEdge<'_, InputNode, OutputNode>>,
+    ) -> Self {
+        let edges = edges.into_iter().collect::<Vec<_>>();
+        let mut by_input: HashMap<InputNode, HashSet<OutputNode>> = HashMap::default();
+        for edge in &edges {
+            by_input
+                .entry(edge.input())
+                .or_default()
+                .insert(edge.output());
+        }
+        let mut groups: Vec<(HashSet<InputNode>, HashSet<OutputNode>)> = Vec::new();
+        for (input, outputs) in by_input {
+            if let Some((inputs, _)) = groups.iter_mut().find(|(_, set)| *set == outputs) {
+                inputs.insert(input);
+            } else {
+                groups.push((HashSet::from_iter([input]), outputs));
+            }
+        }
+        for (_, left) in &groups {
+            for (_, right) in &groups {
+                if !left.is_disjoint(right) && !left.is_subset(right) && !right.is_subset(left) {
+                    return Self::new(edges);
+                }
+            }
+        }
+        Self(
+            groups
+                .into_iter()
+                .map(|(inputs, outputs)| {
+                    HyperEdge::new(inputs.into_iter().collect(), outputs.into_iter().collect())
+                })
+                .collect(),
+        )
+    }
+
     pub(crate) fn new(
         edges: impl IntoIterator<Item = AbstractionBlockEdge<'_, InputNode, OutputNode>>,
     ) -> Self {
@@ -302,9 +405,14 @@ pub(crate) fn couple_edges<
 >(
     metadata: Metadata,
     edges: &HashSet<AbstractionBlockEdge<'tcx, InputNode, OutputNode>>,
+    function_call: bool,
     f: impl FnOnce(CoupledEdges<Metadata, InputNode, OutputNode>) -> PcgCoupledEdges<'tcx>,
 ) -> CoupleEdgesResult<'tcx, Metadata> {
-    let coupled_edges = CoupledEdgesData::new(edges.iter().copied());
+    let coupled_edges = if function_call {
+        CoupledEdgesData::new_for_function(edges.iter().copied())
+    } else {
+        CoupledEdgesData::new(edges.iter().copied())
+    };
     CoupleEdgesResult(Ok(f(CoupledEdges {
         metadata,
         edges: coupled_edges,
@@ -399,12 +507,17 @@ impl<'tcx> PcgCoupledEdges<'tcx> {
         let mut result: Vec<PcgCoupleEdgesResult<'tcx>> = function_edges
             .iter()
             .map(|(metadata, edges)| {
-                couple_edges(metadata.clone(), edges, PcgCoupledEdges::function_call)
-                    .map_source_edges(restore_fn_edges)
+                couple_edges(
+                    metadata.clone(),
+                    edges,
+                    true,
+                    PcgCoupledEdges::function_call,
+                )
+                .map_source_edges(restore_fn_edges)
             })
             .collect::<Vec<_>>();
         result.extend(loop_edges.iter().map(|(metadata, edges)| {
-            couple_edges(metadata.clone(), edges, PcgCoupledEdges::loop_)
+            couple_edges(metadata.clone(), edges, false, PcgCoupledEdges::loop_)
                 .map_source_edges(restore_loop_edge)
         }));
         CouplingResults::new(result)
