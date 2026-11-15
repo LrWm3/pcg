@@ -646,6 +646,12 @@ impl<'state, 'a: 'state, 'tcx: 'a, Ctxt: DataflowCtxt<'a, 'tcx>>
                 BorrowPcgAction::label_lifetime_projection(
                     LabelNodePredicate::And(vec![
                         LabelNodePredicate::PlaceEquals(place),
+                        // An overwrite updates the current projection only.
+                        // A moved call argument can retain a post-call projection
+                        // feeding a still-live owner's future state. Resetting
+                        // that historical label disconnects the call output and
+                        // allows its restoration before the owner has expired.
+                        LabelNodePredicate::PlaceLabelEquals(None),
                         LabelNodePredicate::InSourceNodes,
                         LabelNodePredicate::EdgeType(BorrowPcgEdgeType::BorrowFlow {
                             future_edge_kind: Some(FutureEdgeKind::FromExpansion),
