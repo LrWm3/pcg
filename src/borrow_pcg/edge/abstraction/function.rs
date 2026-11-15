@@ -1185,7 +1185,15 @@ impl<'tcx> DefinedFnCall<'tcx> {
             >>::new(&infcx);
             at.deeply_normalize(subst_sig, &mut *fulfill_cx)
         };
-        normalized.unwrap()
+        // Projection normalization can introduce a fresh region variable that
+        // rustc equates with a region already present in the input signature.
+        // Keep that established equality when matching input/result regions;
+        // otherwise a returned associated-type borrow can lose its owner edge.
+        // This resolves only existing unifications, not arbitrary outlives facts.
+        use crate::rustc_interface::middle::ty::TypeFoldable;
+        let mut regions =
+            crate::rustc_interface::infer::infer::resolve::OpportunisticRegionResolver::new(&infcx);
+        normalized.unwrap().fold_with(&mut regions)
     }
 }
 
