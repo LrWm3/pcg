@@ -248,7 +248,12 @@ impl<'tcx> BorrowEdge<'tcx> {
         borrow
     }
 
-    pub(crate) fn reserve_location(&self) -> Location {
+    /// The MIR creation event of this borrow. This identity remains stable when
+    /// its endpoint places acquire labels or are renamed by later assignments.
+    /// A location may execute repeatedly in a loop; clients must model those
+    /// dynamic instances separately or provide a loop summary.
+    #[must_use]
+    pub fn reserve_location(&self) -> Location {
         self.reserve_location
     }
 
